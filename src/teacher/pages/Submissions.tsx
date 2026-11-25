@@ -1,6 +1,6 @@
 import { AlertCircle, RotateCw, Search } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 
 import { Button } from '../../components/Button'
 import { Input, Select } from '../../components/Field'
@@ -24,14 +24,36 @@ const STATUS_FILTERS: StatusFilter[] = ['ALL', 'PENDING', 'DRAFT', 'RETURNED']
 
 const matchesStatus = (submission: TeacherSubmissionSummaryDTO, filter: StatusFilter) => filter === 'ALL' || submission.status === filter
 
+const statusFromParam = (value: string | null): StatusFilter =>
+  value && STATUS_FILTERS.includes(value as StatusFilter) ? (value as StatusFilter) : 'ALL'
+
 export function TeacherSubmissions() {
   useDocumentTitle('Submissions & Evaluation · Teaching studio')
 
   const [state, setState] = useState<Load>({ status: 'loading' })
   const [reload, setReload] = useState(0)
-  const [status, setStatus] = useState<StatusFilter>('ALL')
-  const [assignment, setAssignment] = useState('ALL')
+  const [params, setParams] = useSearchParams()
+  const status = statusFromParam(params.get('status'))
+  const assignment = params.get('assignment') ?? 'ALL'
   const [query, setQuery] = useState('')
+
+  /* The filters live in the URL: the overview deep-links here with
+     ?status=PENDING, and a shared or reloaded link lands on the same view. */
+  function setFilter(next: { status?: StatusFilter; assignment?: string }) {
+    const nextStatus = next.status ?? status
+    const nextAssignment = next.assignment ?? assignment
+    setParams(
+      (prev) => {
+        const merged = new URLSearchParams(prev)
+        if (nextStatus === 'ALL') merged.delete('status')
+        else merged.set('status', nextStatus)
+        if (nextAssignment === 'ALL') merged.delete('assignment')
+        else merged.set('assignment', nextAssignment)
+        return merged
+      },
+      { replace: true },
+    )
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -94,7 +116,7 @@ export function TeacherSubmissions() {
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-2">
           {STATUS_FILTERS.map((f) => (
-            <Chip key={f} active={status === f} onClick={() => setStatus(f)}>
+            <Chip key={f} active={status === f} onClick={() => setFilter({ status: f })}>
               {f === 'ALL' ? 'All' : SUBMISSION_STATUS_META[f].label}
               <span className="figures text-[11.5px] opacity-70">{countFor(f)}</span>
             </Chip>
@@ -107,7 +129,7 @@ export function TeacherSubmissions() {
               <Input label="Search submissions" hideLabel placeholder="Search student or assignment…" value={query} onChange={(e) => setQuery(e.target.value)} />
               <Search className="pointer-events-none absolute top-1/2 right-3.5 size-4 -translate-y-1/2 text-faint" aria-hidden />
             </div>
-            <Select label="Assignment" hideLabel value={assignment} onChange={(e) => setAssignment(e.target.value)} className="w-full sm:w-[280px]">
+            <Select label="Assignment" hideLabel value={assignment} onChange={(e) => setFilter({ assignment: e.target.value })} className="w-full sm:w-[280px]">
               <option value="ALL">All published assignments</option>
               {assignments.map((a) => (
                 <option key={a.id} value={a.id}>
@@ -121,8 +143,7 @@ export function TeacherSubmissions() {
             size="sm"
             onClick={() => {
               setQuery('')
-              setAssignment('ALL')
-              setStatus('PENDING')
+              setFilter({ status: 'PENDING', assignment: 'ALL' })
             }}
           >
             Show what needs marking
@@ -169,8 +190,7 @@ export function TeacherSubmissions() {
                 variant="secondary"
                 onClick={() => {
                   setQuery('')
-                  setAssignment('ALL')
-                  setStatus('ALL')
+                  setFilter({ status: 'ALL', assignment: 'ALL' })
                 }}
               >
                 Clear filters
