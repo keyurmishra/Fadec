@@ -32,6 +32,14 @@ CREATE TABLE IF NOT EXISTS teachers (
   avatar_url TEXT
 );
 
+CREATE TABLE IF NOT EXISTS students (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  cohort TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS courses (
   id TEXT PRIMARY KEY,
   slug TEXT NOT NULL UNIQUE,
@@ -42,7 +50,6 @@ CREATE TABLE IF NOT EXISTS courses (
   status TEXT NOT NULL,
   instructor_id TEXT NOT NULL REFERENCES teachers(id),
   thumbnail_url TEXT,
-  enrolled_count INTEGER NOT NULL DEFAULT 0,
   assignment_count INTEGER NOT NULL DEFAULT 0,
   completion_percent INTEGER NOT NULL DEFAULT 0,
   position INTEGER NOT NULL DEFAULT 0,
@@ -51,6 +58,19 @@ CREATE TABLE IF NOT EXISTS courses (
   published_at TEXT
 );
 CREATE INDEX IF NOT EXISTS courses_by_teacher ON courses(instructor_id, position);
+
+/* A student exists independently of a course, and the enrolment is what scopes
+   them to one. The composite key stops a double enrolment and makes the pair the
+   unit every student query joins on. No semicolons in this block: SCHEMA is split
+   on them before it is prepared. */
+CREATE TABLE IF NOT EXISTS course_enrolments (
+  course_id TEXT NOT NULL REFERENCES courses(id),
+  student_id TEXT NOT NULL REFERENCES students(id),
+  enrolled_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  PRIMARY KEY (course_id, student_id)
+);
+CREATE INDEX IF NOT EXISTS enrolments_by_student ON course_enrolments(student_id);
 
 CREATE TABLE IF NOT EXISTS curriculum_sections (
   id TEXT PRIMARY KEY,

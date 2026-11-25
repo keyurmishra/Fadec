@@ -74,7 +74,8 @@ type SubmissionRow = {
 }
 
 const SELECT_ASSIGNMENT = `
-  SELECT a.*, c.title AS course_title, c.enrolled_count AS enrolled_count,
+  SELECT a.*, c.title AS course_title,
+         (SELECT COUNT(*) FROM course_enrolments e WHERE e.course_id = c.id AND e.status = 'ACTIVE') AS enrolled_count,
          (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id) AS submission_count,
          (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.published_at IS NULL AND s.score IS NULL) AS pending_count,
          (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.published_at IS NULL AND s.score IS NOT NULL) AS draft_count,
@@ -429,7 +430,8 @@ export async function assessmentDigest(db: Db, teacherId: string): Promise<Asses
   const [deadlines, recent, counts] = await Promise.all([
     query<{ id: string; title: string; course_id: string; course_title: string; due_at: string; enrolled_count: number; submitted: number }>(
       db,
-      `SELECT a.id, a.title, a.course_id, c.title AS course_title, a.due_at, c.enrolled_count AS enrolled_count,
+      `SELECT a.id, a.title, a.course_id, c.title AS course_title, a.due_at,
+              (SELECT COUNT(*) FROM course_enrolments e WHERE e.course_id = c.id AND e.status = 'ACTIVE') AS enrolled_count,
               (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id) AS submitted
        FROM assignments a JOIN courses c ON c.id = a.course_id
        WHERE c.instructor_id = ?1 AND a.published_at IS NOT NULL AND a.status = 'OPEN' AND a.due_at >= ?2

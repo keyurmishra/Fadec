@@ -16,6 +16,7 @@ import type { CourseStatus } from '../contracts/catalog'
 import type { TeacherIdentityDTO } from '../contracts/teaching'
 import { seedAssessment } from './assessment-seed'
 import { insertAll } from './sql'
+import { seedStudents } from './student-seed'
 
 /** Bump only when the seed rows themselves change shape. */
 const SEED_VERSION = '1'
@@ -55,7 +56,6 @@ export type SeedCourse = {
   status: CourseStatus
   instructorId: string
   thumbnailUrl: string
-  enrolledCount: number
   assignmentCount: number
   completionPercent: number
   position: number
@@ -76,7 +76,6 @@ export const SEED_COURSES: SeedCourse[] = [
     status: 'PUBLISHED',
     instructorId: 'TCH-2011-004',
     thumbnailUrl: '/images/prog-computing.webp',
-    enrolledCount: 8,
     assignmentCount: 3,
     completionPercent: 62,
     position: 0,
@@ -93,7 +92,6 @@ export const SEED_COURSES: SeedCourse[] = [
     status: 'PUBLISHED',
     instructorId: 'TCH-2011-004',
     thumbnailUrl: '/images/prog-health.webp',
-    enrolledCount: 7,
     assignmentCount: 3,
     completionPercent: 48,
     position: 1,
@@ -110,7 +108,6 @@ export const SEED_COURSES: SeedCourse[] = [
     status: 'DRAFT',
     instructorId: 'TCH-2011-004',
     thumbnailUrl: '/images/prog-business.webp',
-    enrolledCount: 5,
     assignmentCount: 2,
     completionPercent: 0,
     position: 2,
@@ -127,7 +124,6 @@ export const SEED_COURSES: SeedCourse[] = [
     status: 'PUBLISHED',
     instructorId: 'TCH-2011-004',
     thumbnailUrl: '/images/prog-a320.webp',
-    enrolledCount: 4,
     assignmentCount: 2,
     completionPercent: 71,
     position: 3,
@@ -144,7 +140,6 @@ export const SEED_COURSES: SeedCourse[] = [
     status: 'PUBLISHED',
     instructorId: 'TCH-2015-011',
     thumbnailUrl: '/images/prog-psych.webp',
-    enrolledCount: 6,
     assignmentCount: 1,
     completionPercent: 66,
     position: 4,
@@ -421,9 +416,10 @@ type SeedLesson = {
  * written in the same batch as the rows, so an interrupted seed simply runs
  * again; each insert is INSERT OR IGNORE, so a partial retry is safe.
  */
-/** Catalogue first, then the assignments that hang off it. */
+/** Catalogue, then the people on it, then the assignments that hang off it. */
 export async function seedDatabase(db: D1Database): Promise<void> {
   await seedCatalogue(db)
+  await seedStudents(db)
   await seedAssessment(db)
 }
 
@@ -439,8 +435,8 @@ async function seedCatalogue(db: D1Database): Promise<void> {
 
   await insertAll(
     db,
-    `INSERT OR IGNORE INTO courses (id, slug, title, summary, category, level, status, instructor_id, thumbnail_url, enrolled_count, assignment_count, completion_percent, position, created_at, updated_at, published_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO courses (id, slug, title, summary, category, level, status, instructor_id, thumbnail_url, assignment_count, completion_percent, position, created_at, updated_at, published_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     SEED_COURSES.map((c) => [
       c.id,
       c.slug,
@@ -451,7 +447,6 @@ async function seedCatalogue(db: D1Database): Promise<void> {
       c.status,
       c.instructorId,
       c.thumbnailUrl,
-      c.enrolledCount,
       c.assignmentCount,
       c.completionPercent,
       c.position,

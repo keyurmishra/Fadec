@@ -53,7 +53,8 @@ type LectureRow = {
 const SELECT_LECTURE = `
   SELECT l.*, s.title AS section_title, ch.title AS chapter_title,
          c.title AS course_title, c.status AS course_status,
-         c.enrolled_count AS enrolled_count, c.instructor_id AS instructor_id,
+         (SELECT COUNT(*) FROM course_enrolments e WHERE e.course_id = c.id AND e.status = 'ACTIVE') AS enrolled_count,
+         c.instructor_id AS instructor_id,
          (SELECT COUNT(*) FROM lesson_resources r WHERE r.lesson_id = l.id) AS resource_count
   FROM lessons l
   JOIN curriculum_sections s ON s.id = l.section_id

@@ -21,7 +21,8 @@ export type CourseRow = {
   status: CourseStatus
   instructor_id: string
   thumbnail_url: string | null
-  enrolled_count: number
+  /** Active enrolments, counted in the same query so no stored total can drift. */
+  student_count: number
   assignment_count: number
   completion_percent: number
   position: number
@@ -34,7 +35,9 @@ export type CourseRow = {
 }
 
 const SELECT_COURSE = `
-  SELECT c.*, t.name AS instructor_name, t.headline AS instructor_headline, t.avatar_url AS instructor_avatar
+  SELECT c.*,
+         (SELECT COUNT(*) FROM course_enrolments e WHERE e.course_id = c.id AND e.status = 'ACTIVE') AS student_count,
+         t.name AS instructor_name, t.headline AS instructor_headline, t.avatar_url AS instructor_avatar
   FROM courses c
   JOIN teachers t ON t.id = c.instructor_id`
 
@@ -57,7 +60,7 @@ const summary = (row: CourseRow, counts: { sectionCount: number; lectureCount: n
   sectionCount: counts?.sectionCount ?? 0,
   lectureCount: counts?.lectureCount ?? 0,
   assignmentCount: row.assignment_count,
-  enrolledCount: row.enrolled_count,
+  enrolledCount: row.student_count,
   completionPercent: row.completion_percent,
   draftLectureCount: counts?.draftLectureCount ?? 0,
   price: null,
