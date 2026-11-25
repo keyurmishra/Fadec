@@ -14,6 +14,7 @@ import { NotFound } from './pages/NotFound'
 import { ProgrammeDetail } from './pages/ProgrammeDetail'
 import { Programmes } from './pages/Programmes'
 import { Styleguide } from './pages/Styleguide'
+import { SubjectDetail as StudentSubjectDetail, Subjects as StudentSubjects } from './pages/Subjects'
 import { RequireTeacher, TeacherShell } from './teacher/components/TeacherShell'
 import { TeacherCourseDetail } from './teacher/pages/CourseDetail'
 import { TeacherCourses } from './teacher/pages/Courses'
@@ -22,6 +23,8 @@ import { TeacherLectures } from './teacher/pages/Lectures'
 import { TeacherOverview } from './teacher/pages/Overview'
 import { TeacherPlaceholder } from './teacher/pages/Placeholder'
 import { TeacherSignIn } from './teacher/pages/TeacherSignIn'
+import { TeacherSubjectDetail } from './teacher/pages/SubjectDetail'
+import { TeacherSubjects } from './teacher/pages/Subjects'
 
 /** Scroll to the top on a new page, or to the #hash target when there is one. */
 function ScrollManager() {
@@ -58,6 +61,8 @@ function AppRoutes() {
           <Route path="admissions" element={<Admissions />} />
           <Route path="apply" element={<Apply />} />
           <Route path="dashboard" element={<Dashboard />} />
+          <Route path="subjects" element={<StudentSubjects />} />
+          <Route path="subjects/:subjectId" element={<StudentSubjectDetail />} />
           <Route path="events" element={<Events />} />
           <Route path="styleguide" element={<Styleguide />} />
 
@@ -74,6 +79,8 @@ function AppRoutes() {
             <Route path="overview" element={<TeacherOverview />} />
             <Route path="courses" element={<TeacherCourses />} />
             <Route path="courses/:courseId/curriculum" element={<TeacherCourseDetail />} />
+            <Route path="subjects" element={<TeacherSubjects />} />
+            <Route path="subjects/:subjectId" element={<TeacherSubjectDetail />} />
             <Route path="lectures" element={<TeacherLectures />} />
             <Route path="lectures/:lectureId" element={<TeacherLectureDetail />} />
             <Route

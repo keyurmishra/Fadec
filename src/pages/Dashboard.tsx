@@ -140,6 +140,9 @@ function Hub() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Button to="/subjects" variant="secondary" size="sm">
+              Subjects
+            </Button>
             <Badge tone="neutral" className="font-mono">
               {store.student?.studentId}
             </Badge>

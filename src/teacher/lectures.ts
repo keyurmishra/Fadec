@@ -20,7 +20,7 @@ import type {
   TeacherLectureValidationDTO,
   TeacherLessonDTO,
 } from '../contracts/teaching'
-import { courseForTeacher, coursesForTeacher } from './fixtures'
+import { allCourseIds, courseForTeacher, coursesForTeacher, courseTitle } from './fixtures'
 import { outlineFor, setLessonStatus, updateLessonRow } from './curriculum'
 
 const seedTime = '2026-09-12T10:00:00.000Z'
@@ -265,6 +265,43 @@ export function lecturesForTeacher(teacherId: string): TeacherLectureSummaryDTO[
 export function lectureDetail(teacherId: string, lectureId: string): TeacherLectureDetailDTO | null {
   const p = locate(teacherId, lectureId)
   return p ? build(teacherId, p) : null
+}
+
+/** What a student catalogue may show of one lecture. Publication is the only gate. */
+export type PublishedLecture = {
+  id: string
+  courseId: string
+  courseTitle: string
+  title: string
+  kind: 'VIDEO' | 'TEXT'
+  estimatedMinutes: number
+  resources: LectureResourceDTO[]
+}
+
+/**
+ * A lecture as the student syllabus sees it, or null when it is not published.
+ * There is no teacher scope here: a student is not the author, so the draft
+ * state of the parent course is irrelevant to whether the lecture itself is live.
+ */
+export function publishedLecture(lectureId: string): PublishedLecture | null {
+  for (const courseId of allCourseIds()) {
+    const placement = placementsFor(courseId).find((p) => p.lesson.id === lectureId)
+    if (!placement) continue
+    if (placement.lesson.status !== 'PUBLISHED') return null
+    const m = metaFor(placement)
+    return {
+      id: placement.lesson.id,
+      courseId,
+      courseTitle: courseTitle(courseId),
+      title: placement.lesson.title,
+      kind: placement.lesson.kind,
+      estimatedMinutes: placement.lesson.estimatedMinutes,
+      // Students can only open links. A hosted file has no download route until
+      // the media pipeline exists, so it is left out rather than shown dead.
+      resources: m.resources.filter((r) => !!r.externalUrl),
+    }
+  }
+  return null
 }
 
 export type LecturePatch = {

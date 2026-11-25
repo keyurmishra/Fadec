@@ -13,6 +13,26 @@ import {
   setLectureStatus,
   type LecturePatch,
 } from '../teacher/lectures'
+import {
+  addSyllabusLesson,
+  addTopic,
+  attachExistingLecture,
+  createLectureForLesson,
+  createSubject,
+  deleteSyllabusLesson,
+  deleteTopic,
+  detachLecture,
+  moveSubjectItem,
+  publishedSubjectDetail,
+  publishedSubjects,
+  setSubjectStatus,
+  subjectDetail,
+  subjectsForTeacher,
+  updateSubject,
+  updateSyllabusLesson,
+  updateTopic,
+  type SubjectPatch,
+} from '../teacher/subjects'
 
 // The Worker in front of the static site. Every form posts here and each
 // route validates its input with the same rules the browser uses. Nothing is
@@ -429,6 +449,293 @@ app.delete('/api/teacher/lectures/:lectureId/resources/:resourceId', (c) => {
   const updated = removeLectureResource(teacher.teacherId, lectureId, c.req.param('resourceId'))
   if (!updated) return c.json({ error: 'That resource could not be found.' }, 404)
   return c.json(updated)
+})
+
+/* ------------------------------ subjects ------------------------------ */
+
+const subjectNotFound = () => Response.json({ error: 'That subject is not in one of your courses.' }, { status: 404 })
+const topicNotFound = () => Response.json({ error: 'That topic could not be found.' }, { status: 404 })
+const syllabusLessonNotFound = () => Response.json({ error: 'That lesson could not be found.' }, { status: 404 })
+
+/** Optional short text: undefined when absent, null when the wrong type or too long. */
+function textFrom(value: unknown, max: number): { ok: true; value: string | undefined } | { ok: false } {
+  if (value === undefined) return { ok: true, value: undefined }
+  if (typeof value !== 'string') return { ok: false }
+  const text = value.trim()
+  return text.length > max ? { ok: false } : { ok: true, value: text }
+}
+
+/** Course ids the caller may attach: shape errors are 422, someone else's course is 404. */
+function courseIdsFrom(teacherId: string, value: unknown): { ok: true; value: string[] } | { ok: false; code: 422 | 404 } {
+  if (!Array.isArray(value) || !value.length || value.some((v) => typeof v !== 'string')) return { ok: false, code: 422 }
+  const ids = [...new Set(value as string[])]
+  if (ids.some((id) => !courseForTeacher(teacherId, id))) return { ok: false, code: 404 }
+  return { ok: true, value: ids }
+}
+
+app.get('/api/teacher/subjects', (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const items = subjectsForTeacher(teacher.teacherId)
+  const courses = coursesForTeacher(teacher.teacherId).map((course) => ({ id: course.id, title: course.title }))
+  return c.json({ items, courses, totalCount: items.length })
+})
+
+app.post('/api/teacher/subjects', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const name = titleFrom({ title: body.name })
+  if (!name) return invalid({ name: 'Give the subject a name of 2–120 characters.' })
+  const description = textFrom(body.description, 2000)
+  if (!description.ok) return invalid({ description: 'Describe the subject in plain text, under 2,000 characters.' })
+  const courseIds = courseIdsFrom(teacher.teacherId, body.courseIds)
+  if (!courseIds.ok) {
+    return courseIds.code === 404 ? notYours() : invalid({ courseIds: 'Choose at least one of your training courses.' })
+  }
+
+  const subject = createSubject(teacher.teacherId, { name, description: description.value ?? '', courseIds: courseIds.value })
+  if (!subject) return notYours()
+  return c.json(subject, 201)
+})
+
+app.get('/api/teacher/subjects/:subjectId', (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const subject = subjectDetail(teacher.teacherId, c.req.param('subjectId'))
+  if (!subject) return subjectNotFound()
+  return c.json(subject)
+})
+
+app.patch('/api/teacher/subjects/:subjectId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const subjectId = c.req.param('subjectId')
+  if (!subjectDetail(teacher.teacherId, subjectId)) return subjectNotFound()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const patch: SubjectPatch = {}
+  if (body.name !== undefined) {
+    const name = titleFrom({ title: body.name })
+    if (!name) return invalid({ name: 'Give the subject a name of 2–120 characters.' })
+    patch.name = name
+  }
+  if (body.description !== undefined) {
+    const description = textFrom(body.description, 2000)
+    if (!description.ok) return invalid({ description: 'Describe the subject in plain text, under 2,000 characters.' })
+    patch.description = description.value
+  }
+  if (body.courseIds !== undefined) {
+    const courseIds = courseIdsFrom(teacher.teacherId, body.courseIds)
+    if (!courseIds.ok) {
+      return courseIds.code === 404 ? notYours() : invalid({ courseIds: 'Choose at least one of your training courses.' })
+    }
+    patch.courseIds = courseIds.value
+  }
+  if (!Object.keys(patch).length) return invalid({ form: 'Change something before saving.' })
+
+  const updated = updateSubject(teacher.teacherId, subjectId, patch)
+  if (!updated) return subjectNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/subjects/:subjectId/publish', (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const subjectId = c.req.param('subjectId')
+  const subject = subjectDetail(teacher.teacherId, subjectId)
+  if (!subject) return subjectNotFound()
+  if (!subject.publish.canPublish) return c.json({ error: 'Some publish requirements are unmet.', publish: subject.publish }, 422)
+  const updated = setSubjectStatus(teacher.teacherId, subjectId, 'PUBLISHED')
+  if (!updated) return subjectNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/subjects/:subjectId/unpublish', (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const subjectId = c.req.param('subjectId')
+  const updated = setSubjectStatus(teacher.teacherId, subjectId, 'DRAFT')
+  if (!updated) return subjectNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/subjects/:subjectId/topics', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const subjectId = c.req.param('subjectId')
+  if (!subjectDetail(teacher.teacherId, subjectId)) return subjectNotFound()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const title = titleFrom(body)
+  if (!title) return invalid({ title: 'Give the topic a title of 2–120 characters.' })
+  const description = textFrom(body.description, 1000)
+  if (!description.ok) return invalid({ description: 'Describe the topic in plain text, under 1,000 characters.' })
+
+  const updated = addTopic(teacher.teacherId, subjectId, { title, description: description.value ?? '' })
+  if (!updated) return subjectNotFound()
+  return c.json(updated, 201)
+})
+
+app.patch('/api/teacher/topics/:topicId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const topicId = c.req.param('topicId')
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const patch: { title?: string; description?: string } = {}
+  if (body.title !== undefined) {
+    const title = titleFrom(body)
+    if (!title) return invalid({ title: 'Give the topic a title of 2–120 characters.' })
+    patch.title = title
+  }
+  if (body.description !== undefined) {
+    const description = textFrom(body.description, 1000)
+    if (!description.ok) return invalid({ description: 'Describe the topic in plain text, under 1,000 characters.' })
+    patch.description = description.value
+  }
+  if (!Object.keys(patch).length) return invalid({ form: 'Change something before saving.' })
+
+  const updated = updateTopic(teacher.teacherId, topicId, patch)
+  if (!updated) return topicNotFound()
+  return c.json(updated)
+})
+
+app.delete('/api/teacher/topics/:topicId', (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const updated = deleteTopic(teacher.teacherId, c.req.param('topicId'))
+  if (!updated) return topicNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/topics/:topicId/lessons', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const topicId = c.req.param('topicId')
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const title = titleFrom(body)
+  if (!title) return invalid({ title: 'Give the lesson a title of 2–120 characters.' })
+  const description = textFrom(body.description, 1000)
+  if (!description.ok) return invalid({ description: 'Describe the lesson in plain text, under 1,000 characters.' })
+
+  const updated = addSyllabusLesson(teacher.teacherId, topicId, { title, description: description.value ?? '' })
+  if (!updated) return topicNotFound()
+  return c.json(updated, 201)
+})
+
+app.patch('/api/teacher/subject-lessons/:lessonId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const lessonId = c.req.param('lessonId')
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const patch: { title?: string; description?: string } = {}
+  if (body.title !== undefined) {
+    const title = titleFrom(body)
+    if (!title) return invalid({ title: 'Give the lesson a title of 2–120 characters.' })
+    patch.title = title
+  }
+  if (body.description !== undefined) {
+    const description = textFrom(body.description, 1000)
+    if (!description.ok) return invalid({ description: 'Describe the lesson in plain text, under 1,000 characters.' })
+    patch.description = description.value
+  }
+  if (!Object.keys(patch).length) return invalid({ form: 'Change something before saving.' })
+
+  const updated = updateSyllabusLesson(teacher.teacherId, lessonId, patch)
+  if (!updated) return syllabusLessonNotFound()
+  return c.json(updated)
+})
+
+app.delete('/api/teacher/subject-lessons/:lessonId', (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const updated = deleteSyllabusLesson(teacher.teacherId, c.req.param('lessonId'))
+  if (!updated) return syllabusLessonNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/subjects/:subjectId/reorder', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const subjectId = c.req.param('subjectId')
+  if (!subjectDetail(teacher.teacherId, subjectId)) return subjectNotFound()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const kind = body.kind === 'TOPIC' || body.kind === 'LESSON' ? body.kind : null
+  const direction = body.direction === 'UP' || body.direction === 'DOWN' ? body.direction : null
+  if (!kind || !direction || typeof body.id !== 'string') return invalid({ form: 'Choose an item and a direction.' })
+
+  const result = moveSubjectItem(teacher.teacherId, subjectId, kind, body.id, direction)
+  if (!result) return subjectNotFound()
+  if (!result.moved) return c.json({ error: 'That item cannot move any further.', subject: result.detail }, 409)
+  return c.json(result.detail)
+})
+
+/** Attach an existing lecture ({ lectureId }) or create one in a course ({ courseId, kind, estimatedMinutes }). */
+app.post('/api/teacher/subject-lessons/:lessonId/lectures', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const lessonId = c.req.param('lessonId')
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  if (body.lectureId !== undefined) {
+    if (typeof body.lectureId !== 'string') return invalid({ lectureId: 'Choose a lecture.' })
+    const result = attachExistingLecture(teacher.teacherId, lessonId, body.lectureId)
+    if (result.status === 'CONFLICT') {
+      return c.json({ error: 'That lecture already delivers another syllabus lesson.' }, 409)
+    }
+    if (result.status !== 'OK') return syllabusLessonNotFound()
+    return c.json(result.detail, 201)
+  }
+
+  if (typeof body.courseId !== 'string') return invalid({ courseId: 'Choose the course this lecture is taught in.' })
+  if (!courseForTeacher(teacher.teacherId, body.courseId)) return notYours()
+  const kind = body.kind === 'TEXT' ? 'TEXT' : body.kind === 'VIDEO' ? 'VIDEO' : null
+  if (!kind) return invalid({ kind: 'Choose video or text.' })
+  const minutes = Number(body.estimatedMinutes)
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 600) {
+    return invalid({ estimatedMinutes: 'Enter a duration between 1 and 600 minutes.' })
+  }
+
+  const result = createLectureForLesson(teacher.teacherId, lessonId, { courseId: body.courseId, kind, estimatedMinutes: minutes })
+  if (result.status !== 'OK') return syllabusLessonNotFound()
+  return c.json(result.detail, 201)
+})
+
+app.delete('/api/teacher/subject-lessons/:lessonId/lectures/:lectureId', (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const updated = detachLecture(teacher.teacherId, c.req.param('lessonId'), c.req.param('lectureId'))
+  if (updated.status !== 'OK') return c.json({ error: 'That lecture is not attached to this lesson.' }, 404)
+  return c.json(updated.detail)
+})
+
+/* -------------------------- student catalogue --------------------------- */
+
+/* Public for now: only published subjects, lessons with a published lecture and
+   published lectures themselves are included. Enrolment scoping needs the
+   student session that does not exist yet, so it is not pretended here. */
+app.get('/api/subjects', (c) => {
+  const items = publishedSubjects()
+  return c.json({ items, totalCount: items.length })
+})
+
+app.get('/api/subjects/:subjectId', (c) => {
+  const subject = publishedSubjectDetail(c.req.param('subjectId'))
+  if (!subject) return c.json({ error: 'That subject is not published.' }, 404)
+  return c.json(subject)
 })
 
 app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404))

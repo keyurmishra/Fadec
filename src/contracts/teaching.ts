@@ -308,3 +308,131 @@ export type TeacherNotificationPrefsDTO = {
   liveClassReminder: boolean
   weeklyDigest: boolean
 }
+
+/* -------------------------------- subjects -------------------------------- */
+
+/*
+  Academic subjects sit above the course curriculum, not beside it: PPL and CPL
+  are training courses, Meteorology is a subject taught inside both. A subject
+  owns topics → lessons; each lesson is delivered by one or more existing course
+  lectures, linked rather than copied, so a lecture edited in the builder is the
+  same row the subject syllabus shows.
+*/
+
+export type SubjectStatus = 'DRAFT' | 'PUBLISHED'
+
+/** One training course an academic subject is taught within. */
+export type SubjectCourseDTO = {
+  id: Id
+  title: string
+  status: CourseStatus
+}
+
+/** A course lecture that delivers one syllabus lesson. */
+export type SubjectLectureRefDTO = {
+  id: Id
+  courseId: Id
+  courseTitle: string
+  title: string
+  kind: 'VIDEO' | 'TEXT'
+  status: 'DRAFT' | 'PUBLISHED'
+  mediaStatus: 'READY' | 'PROCESSING' | 'NONE'
+  estimatedMinutes: number
+  resourceCount: number
+  updatedAt: IsoDateTime
+}
+
+export type SubjectLessonDTO = {
+  id: Id
+  topicId: Id
+  title: string
+  description: string
+  position: number
+  /** Lectures attached to this syllabus lesson, drafts included. */
+  lectures: SubjectLectureRefDTO[]
+  createdAt: IsoDateTime
+  updatedAt: IsoDateTime
+}
+
+export type SubjectTopicDTO = {
+  id: Id
+  subjectId: Id
+  title: string
+  description: string
+  position: number
+  lessons: SubjectLessonDTO[]
+  createdAt: IsoDateTime
+  updatedAt: IsoDateTime
+}
+
+/** One card in the subject management grid. */
+export type SubjectSummaryDTO = {
+  id: Id
+  name: string
+  description: string
+  status: SubjectStatus
+  topicCount: number
+  lessonCount: number
+  /** Lectures linked across every topic. */
+  lectureCount: number
+  publishedLectureCount: number
+  draftLectureCount: number
+  courses: SubjectCourseDTO[]
+  /** Newest lecture edit, or null when no lecture is attached yet. */
+  lastLectureUpdatedAt: IsoDateTime | null
+  createdAt: IsoDateTime
+  updatedAt: IsoDateTime
+}
+
+/** What still blocks a subject from being published. */
+export type SubjectValidationDTO = {
+  canPublish: boolean
+  requirements: Array<{ key: string; label: string; satisfied: boolean; detail?: string }>
+}
+
+export type SubjectDetailDTO = SubjectSummaryDTO & {
+  topics: SubjectTopicDTO[]
+  publish: SubjectValidationDTO
+}
+
+/* --------------------------- student catalogue --------------------------- */
+
+/*
+  The student view is built from published rows only. These payloads are the
+  contract for a future `GET /api/student/subjects` scoped to an enrolment; until
+  student authorisation exists, the public catalogue serves them.
+*/
+
+export type StudentSubjectSummaryDTO = {
+  id: Id
+  name: string
+  description: string
+  topicCount: number
+  lessonCount: number
+  lectureCount: number
+  courses: Array<{ id: Id; title: string }>
+}
+
+export type StudentSubjectLectureDTO = {
+  id: Id
+  courseId: Id
+  courseTitle: string
+  title: string
+  kind: 'VIDEO' | 'TEXT'
+  estimatedMinutes: number
+  resources: LectureResourceDTO[]
+}
+
+export type StudentSubjectDetailDTO = StudentSubjectSummaryDTO & {
+  topics: Array<{
+    id: Id
+    title: string
+    description: string
+    lessons: Array<{
+      id: Id
+      title: string
+      description: string
+      lectures: StudentSubjectLectureDTO[]
+    }>
+  }>
+}

@@ -1,4 +1,4 @@
-import { BookOpen, CalendarDays, ChartColumn, ClipboardList, LayoutDashboard, ListChecks, Megaphone, Settings, SquareCheck, UserCheck, Users, Video } from 'lucide-react'
+import { BookOpen, CalendarDays, ChartColumn, ClipboardList, Layers, LayoutDashboard, ListChecks, Megaphone, Settings, SquareCheck, UserCheck, Users, Video } from 'lucide-react'
 
 /*
   The teaching studio's navigation. One list, used by both the desktop rail and
@@ -8,6 +8,7 @@ import { BookOpen, CalendarDays, ChartColumn, ClipboardList, LayoutDashboard, Li
 export const TEACHER_NAV = [
   { to: '/teach/overview', label: 'Dashboard', short: 'Dashboard', icon: LayoutDashboard },
   { to: '/teach/courses', label: 'My Courses', short: 'Courses', icon: BookOpen },
+  { to: '/teach/subjects', label: 'Subjects', short: 'Subjects', icon: Layers },
   { to: '/teach/lectures', label: 'Lectures & Videos', short: 'Lectures', icon: Video },
   { to: '/teach/assignments', label: 'Assignments', short: 'Assignments', icon: ClipboardList },
   { to: '/teach/submissions', label: 'Submissions & Evaluation', short: 'Submissions', icon: SquareCheck },

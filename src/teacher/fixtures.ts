@@ -197,6 +197,15 @@ export const courseForTeacher = (teacherId: string, courseId: string) => {
 
 export const courseTitle = (courseId: string) => COURSES.find((c) => c.id === courseId)?.title ?? 'Course'
 
+/** Every course id in the catalogue. Used where no teacher scope applies. */
+export const allCourseIds = () => COURSES.map((c) => c.id)
+
+/** A course's title and status without a teacher scope, for the student catalogue. */
+export const publicCourse = (courseId: string) => {
+  const row = COURSES.find((c) => c.id === courseId)
+  return row ? { id: row.id, title: row.title, status: row.status } : null
+}
+
 /* -------------------------------- roster --------------------------------- */
 
 /** name, course, assignment average, quiz average, lecture completion, attendance */
