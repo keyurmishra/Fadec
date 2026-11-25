@@ -8,6 +8,7 @@
   assigned to the requesting teacher.
 */
 import type { AuditStamp, Id, IsoDateTime, MoneyDTO } from './common'
+import type { LatePolicy } from './assessment'
 import type { ChapterDTO, CourseStatus, InstructorSummaryDTO, LessonDTO, SectionDTO } from './catalog'
 
 /** Who the teaching studio is signed in as. */
@@ -393,6 +394,99 @@ export type SubjectValidationDTO = {
 export type SubjectDetailDTO = SubjectSummaryDTO & {
   topics: SubjectTopicDTO[]
   publish: SubjectValidationDTO
+}
+
+/* ------------------------- teacher assessments ------------------------- */
+
+/*
+  The teacher's view of assignments and submissions. A grade has two states on
+  purpose: saving a mark is one mutation, releasing it to the student is
+  another, because publication is what notifies the student and records an audit
+  entry. `status` below is derived from the publication flag and the window, so
+  the screen never has to compare clocks to know whether an assignment is open.
+*/
+
+export type AssignmentStatusView = 'DRAFT' | 'SCHEDULED' | 'OPEN' | 'CLOSED'
+
+/** Where one submission stands in the marking queue. */
+export type SubmissionMarkingStatus = 'PENDING' | 'DRAFT' | 'RETURNED'
+
+export type TeacherAssignmentSummaryDTO = {
+  id: Id
+  courseId: Id
+  courseTitle: string
+  title: string
+  /** Derived: draft, scheduled, open or closed (manually or by its due date). */
+  status: AssignmentStatusView
+  opensAt: IsoDateTime
+  dueAt: IsoDateTime
+  latePolicy: LatePolicy
+  attemptsAllowed: number
+  maxScore: number
+  submissionCount: number
+  /** Handed in with no mark saved yet: what the marking queue calls awaiting marking. */
+  pendingCount: number
+  /** Marked but held back from the student until it is returned. */
+  draftCount: number
+  /** Marks released to the student. */
+  gradedCount: number
+  lateCount: number
+  /** Enrolments on the parent course, so "6 of 8 handed in" is honest. */
+  enrolledCount: number
+  updatedAt: IsoDateTime
+}
+
+export type TeacherAssignmentValidationDTO = {
+  canPublish: boolean
+  requirements: Array<{ key: string; label: string; satisfied: boolean; detail?: string }>
+}
+
+export type TeacherSubmissionSummaryDTO = {
+  id: Id
+  assignmentId: Id
+  assignmentTitle: string
+  courseId: Id
+  courseTitle: string
+  studentUserId: Id
+  studentName: string
+  /** 1-based; every attempt is retained. */
+  attemptNumber: number
+  submittedAt: IsoDateTime
+  isLate: boolean
+  status: SubmissionMarkingStatus
+  score: number | null
+  maxScore: number
+  hasText: boolean
+  fileName: string | null
+  updatedAt: IsoDateTime
+}
+
+export type TeacherSubmissionDetailDTO = TeacherSubmissionSummaryDTO & {
+  answerText: string | null
+  feedback: string
+  gradedAt: IsoDateTime | null
+  publishedAt: IsoDateTime | null
+  /** Every mark change, newest first. Publication and withdrawal are entries too. */
+  revisions: Array<{
+    at: IsoDateTime
+    action: 'DRAFT_SAVED' | 'PUBLISHED' | 'WITHDRAWN'
+    previousScore: number | null
+    newScore: number | null
+    reason: string | null
+  }>
+}
+
+export type TeacherAssignmentDetailDTO = TeacherAssignmentSummaryDTO & {
+  instructions: string
+  allowFileUpload: boolean
+  createdAt: IsoDateTime
+  publish: TeacherAssignmentValidationDTO
+  submissions: TeacherSubmissionSummaryDTO[]
+}
+
+export type TeacherSubmissionQueueDTO = {
+  items: TeacherSubmissionSummaryDTO[]
+  assignments: Array<{ id: Id; title: string; courseTitle: string }>
 }
 
 /* --------------------------- student catalogue --------------------------- */

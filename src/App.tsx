@@ -16,6 +16,8 @@ import { Programmes } from './pages/Programmes'
 import { Styleguide } from './pages/Styleguide'
 import { SubjectDetail as StudentSubjectDetail, Subjects as StudentSubjects } from './pages/Subjects'
 import { RequireTeacher, TeacherShell } from './teacher/components/TeacherShell'
+import { TeacherAssignmentDetail } from './teacher/pages/AssignmentDetail'
+import { TeacherAssignments } from './teacher/pages/Assignments'
 import { TeacherCourseDetail } from './teacher/pages/CourseDetail'
 import { TeacherCourses } from './teacher/pages/Courses'
 import { TeacherLectureDetail } from './teacher/pages/LectureDetail'
@@ -24,6 +26,8 @@ import { TeacherOverview } from './teacher/pages/Overview'
 import { TeacherPlaceholder } from './teacher/pages/Placeholder'
 import { TeacherSignIn } from './teacher/pages/TeacherSignIn'
 import { TeacherSubjectDetail } from './teacher/pages/SubjectDetail'
+import { TeacherSubmissionDetail } from './teacher/pages/SubmissionDetail'
+import { TeacherSubmissions } from './teacher/pages/Submissions'
 import { TeacherSubjects } from './teacher/pages/Subjects'
 
 /** Scroll to the top on a new page, or to the #hash target when there is one. */
@@ -83,28 +87,10 @@ function AppRoutes() {
             <Route path="subjects/:subjectId" element={<TeacherSubjectDetail />} />
             <Route path="lectures" element={<TeacherLectures />} />
             <Route path="lectures/:lectureId" element={<TeacherLectureDetail />} />
-            <Route
-              path="assignments"
-              element={
-                <TeacherPlaceholder
-                  title="Assignments"
-                  phase="Phase 3"
-                  description="Create and publish assignments, then track who has handed in."
-                  items={['Assignment drafts and publishing', 'Submission formats and late policy', 'Submitted, missing and late counts', 'Close and re-open an assignment']}
-                />
-              }
-            />
-            <Route
-              path="submissions"
-              element={
-                <TeacherPlaceholder
-                  title="Submissions & Evaluation"
-                  phase="Phase 3"
-                  description="Mark work, write feedback and return results to students."
-                  items={['Pending, evaluated and late queues', 'File preview and download', 'Marks, feedback and return', 'Re-evaluation with a written reason']}
-                />
-              }
-            />
+            <Route path="assignments" element={<TeacherAssignments />} />
+            <Route path="assignments/:assignmentId" element={<TeacherAssignmentDetail />} />
+            <Route path="submissions" element={<TeacherSubmissions />} />
+            <Route path="submissions/:submissionId" element={<TeacherSubmissionDetail />} />
             <Route
               path="quizzes"
               element={

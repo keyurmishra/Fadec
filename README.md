@@ -68,6 +68,29 @@ Bad JSON returns 400 and unknown `/api/*` routes a JSON 404.
 The student hub sign-in is a device-only demo. For real accounts, add Sign in
 with Freebuff and a database.
 
+## Teaching data in D1
+
+The teaching studio keeps its courses, curricula, lectures, resources and
+subjects in D1, through the `DB` binding declared in `wrangler.jsonc`. Nothing
+is held in module memory, so a Worker restart no longer discards edits.
+
+- `src/teacher/db.ts` creates the tables on the first request an isolate serves.
+- `src/teacher/seeds.ts` writes the starter catalogue once, guarded by a
+  `meta.seed_version` marker. Ids are fixed, so a retry cannot duplicate rows and
+  a row a teacher deletes is not resurrected on the next restart.
+- `src/teacher/sql.ts` holds the query helpers; `courses.ts`, `curriculum.ts`,
+  `lectures.ts` and `subjects.ts` are the D1-backed stores.
+
+Local development persists the database under `.wrangler/state/v3/d1`. To start
+from a clean catalogue, stop the dev server, delete that directory and restart.
+
+Before deploying, create the real database and paste its id into
+`wrangler.jsonc`:
+
+```sh
+npx wrangler d1 create fadec-teacher
+```
+
 ## Deploy with Freebuff Sites
 
 `deploy.json` already points at the build output. After `bun run build`,

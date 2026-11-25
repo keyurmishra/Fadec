@@ -1,9 +1,26 @@
 import { Hono } from 'hono'
 
+import type { LatePolicy } from '../contracts/assessment'
 import { EVENTS, PROGRAMMES } from '../content'
 import { validateApplication, validateEmailOnly, validateRsvp, validateSignIn, validateTeacherSignIn, type FieldErrors } from '../shared/validation'
+import {
+  assignmentDetail,
+  assignmentsForTeacher,
+  createAssignment,
+  publishGrade,
+  saveGrade,
+  setAssignmentClosed,
+  setAssignmentPublished,
+  submissionDetail,
+  submissionsForTeacher,
+  updateAssignment,
+  withdrawGrade,
+  type AssignmentPatch,
+} from '../teacher/assignments'
+import { ensureDatabase } from '../teacher/db'
 import { addChapter, addLesson, addSection, deleteChapter, deleteLesson, deleteSection, move, outlineFor, publishValidation } from '../teacher/curriculum'
-import { courseForTeacher, coursesForTeacher, dashboardForTeacher, setCourseStatus, TEACHERS } from '../teacher/fixtures'
+import { courseForTeacher, coursesForTeacher, setCourseStatus } from '../teacher/courses'
+import { dashboardForTeacher, TEACHERS } from '../teacher/fixtures'
 import {
   addLectureResource,
   applyLecturePatch,
@@ -34,13 +51,13 @@ import {
   type SubjectPatch,
 } from '../teacher/subjects'
 
-// The Worker in front of the static site. Every form posts here and each
-// route validates its input with the same rules the browser uses. Nothing is
-// stored server-side yet: the browser keeps applications, RSVPs and the
-// student session in localStorage. Connect these routes to your admissions
-// system, email provider or a D1 table to keep them.
+// The Worker in front of the static site. Every form posts here and each route
+// validates its input with the same rules the browser uses. Applications,
+// RSVPs and the student session are still kept in localStorage; the teaching
+// studio writes its courses, curricula, lectures and subjects to D1.
 type Env = {
   ASSETS: Fetcher
+  DB: D1Database
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -58,6 +75,13 @@ async function readBody(req: Request): Promise<Record<string, unknown> | null> {
 
 const invalid = (fieldErrors: FieldErrors) => Response.json({ error: 'Please check the highlighted fields.', fieldErrors }, { status: 422 })
 const badJson = () => Response.json({ error: 'Send a JSON object.' }, { status: 400 })
+
+// Create the tables and seed the catalogue on the first request this isolate
+// serves, then reuse that result for every later request.
+app.use('/api/*', async (c, next) => {
+  await ensureDatabase(c.env.DB)
+  await next()
+})
 
 app.get('/api/health', (c) => c.json({ ok: true }))
 
@@ -167,26 +191,26 @@ app.get('/api/teacher/me', (c) => {
 })
 
 /** Everything the overview screen needs, filtered to this teacher's courses. */
-app.get('/api/teacher/dashboard', (c) => {
+app.get('/api/teacher/dashboard', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const dashboard = dashboardForTeacher(teacher.teacherId)
+  const dashboard = await dashboardForTeacher(c.env.DB, teacher.teacherId)
   if (!dashboard) return c.json({ error: 'No courses are assigned to this account yet.' }, { status: 404 })
   return c.json(dashboard)
 })
 
-app.get('/api/teacher/courses', (c) => {
+app.get('/api/teacher/courses', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const courses = coursesForTeacher(teacher.teacherId)
+  const courses = await coursesForTeacher(c.env.DB, teacher.teacherId)
   return c.json({ items: courses, nextCursor: null, totalCount: courses.length })
 })
 
 /** A course belonging to another teacher answers exactly like a missing one. */
-app.get('/api/teacher/courses/:courseId', (c) => {
+app.get('/api/teacher/courses/:courseId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const course = courseForTeacher(teacher.teacherId, c.req.param('courseId'))
+  const course = await courseForTeacher(c.env.DB, teacher.teacherId, c.req.param('courseId'))
   if (!course) return notYours()
   return c.json(course)
 })
@@ -199,18 +223,19 @@ const titleFrom = (body: Record<string, unknown>) => {
 }
 
 /** The payload every curriculum mutation returns, so the screen never refetches. */
-function outlinePayload(teacherId: string, courseId: string) {
-  const course = courseForTeacher(teacherId, courseId)
+async function outlinePayload(db: D1Database, teacherId: string, courseId: string) {
+  const course = await courseForTeacher(db, teacherId, courseId)
   if (!course) return null
-  return { course, sections: outlineFor(courseId), publish: publishValidation(course, courseId) }
+  const [sections, publish] = await Promise.all([outlineFor(db, courseId), publishValidation(db, course, courseId)])
+  return { course, sections, publish }
 }
 
 const courseIdParam = (c: { req: { param: (name: string) => string } }) => c.req.param('courseId')
 
-app.get('/api/teacher/courses/:courseId/outline', (c) => {
+app.get('/api/teacher/courses/:courseId/outline', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const payload = outlinePayload(teacher.teacherId, courseIdParam(c))
+  const payload = await outlinePayload(c.env.DB, teacher.teacherId, courseIdParam(c))
   if (!payload) return notYours()
   return c.json(payload)
 })
@@ -218,52 +243,57 @@ app.get('/api/teacher/courses/:courseId/outline', (c) => {
 app.post('/api/teacher/courses/:courseId/sections', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const courseId = courseIdParam(c)
-  if (!courseForTeacher(teacher.teacherId, courseId)) return notYours()
+  if (!(await courseForTeacher(db, teacher.teacherId, courseId))) return notYours()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
   const title = titleFrom(body)
   if (!title) return invalid({ title: 'Give the module a title of 2–120 characters.' })
-  addSection(courseId, title)
-  return c.json(outlinePayload(teacher.teacherId, courseId), 201)
+  await addSection(db, courseId, title)
+  return c.json(await outlinePayload(db, teacher.teacherId, courseId), 201)
 })
 
-app.delete('/api/teacher/courses/:courseId/sections/:sectionId', (c) => {
+app.delete('/api/teacher/courses/:courseId/sections/:sectionId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const courseId = courseIdParam(c)
-  if (!courseForTeacher(teacher.teacherId, courseId)) return notYours()
-  if (!deleteSection(courseId, c.req.param('sectionId'))) return c.json({ error: 'That module could not be found.' }, 404)
-  return c.json(outlinePayload(teacher.teacherId, courseId))
+  if (!(await courseForTeacher(db, teacher.teacherId, courseId))) return notYours()
+  if (!(await deleteSection(db, courseId, c.req.param('sectionId')))) return c.json({ error: 'That module could not be found.' }, 404)
+  return c.json(await outlinePayload(db, teacher.teacherId, courseId))
 })
 
 app.post('/api/teacher/courses/:courseId/sections/:sectionId/chapters', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const courseId = courseIdParam(c)
-  if (!courseForTeacher(teacher.teacherId, courseId)) return notYours()
+  if (!(await courseForTeacher(db, teacher.teacherId, courseId))) return notYours()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
   const title = titleFrom(body)
   if (!title) return invalid({ title: 'Give the chapter a title of 2–120 characters.' })
-  if (!addChapter(courseId, c.req.param('sectionId'), title)) return c.json({ error: 'That module could not be found.' }, 404)
-  return c.json(outlinePayload(teacher.teacherId, courseId), 201)
+  if (!(await addChapter(db, courseId, c.req.param('sectionId'), title))) return c.json({ error: 'That module could not be found.' }, 404)
+  return c.json(await outlinePayload(db, teacher.teacherId, courseId), 201)
 })
 
-app.delete('/api/teacher/courses/:courseId/chapters/:chapterId', (c) => {
+app.delete('/api/teacher/courses/:courseId/chapters/:chapterId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const courseId = courseIdParam(c)
-  if (!courseForTeacher(teacher.teacherId, courseId)) return notYours()
-  if (!deleteChapter(courseId, c.req.param('chapterId'))) return c.json({ error: 'That chapter could not be found.' }, 404)
-  return c.json(outlinePayload(teacher.teacherId, courseId))
+  if (!(await courseForTeacher(db, teacher.teacherId, courseId))) return notYours()
+  if (!(await deleteChapter(db, courseId, c.req.param('chapterId')))) return c.json({ error: 'That chapter could not be found.' }, 404)
+  return c.json(await outlinePayload(db, teacher.teacherId, courseId))
 })
 
 app.post('/api/teacher/courses/:courseId/chapters/:chapterId/lessons', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const courseId = courseIdParam(c)
-  if (!courseForTeacher(teacher.teacherId, courseId)) return notYours()
+  if (!(await courseForTeacher(db, teacher.teacherId, courseId))) return notYours()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
   const title = titleFrom(body)
@@ -271,54 +301,60 @@ app.post('/api/teacher/courses/:courseId/chapters/:chapterId/lessons', async (c)
   const kind = body.kind === 'TEXT' ? 'TEXT' : 'VIDEO'
   const minutes = Number(body.estimatedMinutes)
   if (!Number.isInteger(minutes) || minutes < 1 || minutes > 600) return invalid({ estimatedMinutes: 'Enter a duration between 1 and 600 minutes.' })
-  if (!addLesson(courseId, c.req.param('chapterId'), { title, kind, estimatedMinutes: minutes })) return c.json({ error: 'That chapter could not be found.' }, 404)
-  return c.json(outlinePayload(teacher.teacherId, courseId), 201)
+  if (!(await addLesson(db, courseId, c.req.param('chapterId'), { title, kind, estimatedMinutes: minutes }))) return c.json({ error: 'That chapter could not be found.' }, 404)
+  return c.json(await outlinePayload(db, teacher.teacherId, courseId), 201)
 })
 
-app.delete('/api/teacher/courses/:courseId/lessons/:lessonId', (c) => {
+app.delete('/api/teacher/courses/:courseId/lessons/:lessonId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const courseId = courseIdParam(c)
-  if (!courseForTeacher(teacher.teacherId, courseId)) return notYours()
-  if (!deleteLesson(courseId, c.req.param('lessonId'))) return c.json({ error: 'That lecture could not be found.' }, 404)
-  return c.json(outlinePayload(teacher.teacherId, courseId))
+  if (!(await courseForTeacher(db, teacher.teacherId, courseId))) return notYours()
+  if (!(await deleteLesson(db, courseId, c.req.param('lessonId')))) return c.json({ error: 'That lecture could not be found.' }, 404)
+  return c.json(await outlinePayload(db, teacher.teacherId, courseId))
 })
 
 app.post('/api/teacher/courses/:courseId/reorder', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const courseId = courseIdParam(c)
-  if (!courseForTeacher(teacher.teacherId, courseId)) return notYours()
+  if (!(await courseForTeacher(db, teacher.teacherId, courseId))) return notYours()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
   const kind = body.kind === 'SECTION' || body.kind === 'CHAPTER' || body.kind === 'LESSON' ? body.kind : null
   const direction = body.direction === 'UP' || body.direction === 'DOWN' ? body.direction : null
-  if (kind && direction && typeof body.id === 'string' && move(courseId, kind, body.id, direction)) {
-    return c.json(outlinePayload(teacher.teacherId, courseId))
+  if (kind && direction && typeof body.id === 'string' && (await move(db, courseId, kind, body.id, direction))) {
+    return c.json(await outlinePayload(db, teacher.teacherId, courseId))
   }
   return c.json({ error: 'That item cannot move any further.' }, 409)
 })
 
-app.post('/api/teacher/courses/:courseId/publish', (c) => {
+app.post('/api/teacher/courses/:courseId/publish', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const courseId = courseIdParam(c)
-  const course = courseForTeacher(teacher.teacherId, courseId)
+  const course = await courseForTeacher(db, teacher.teacherId, courseId)
   if (!course) return notYours()
-  const publish = publishValidation(course, courseId)
+  const publish = await publishValidation(db, course, courseId)
   if (!publish.canPublish) return c.json({ error: 'Some publish requirements are unmet.', publish }, 422)
-  const updated = setCourseStatus(teacher.teacherId, courseId, 'PUBLISHED')
+  const updated = await setCourseStatus(db, teacher.teacherId, courseId, 'PUBLISHED')
   if (!updated) return notYours()
-  return c.json({ course: updated, sections: outlineFor(courseId), publish: publishValidation(updated, courseId) })
+  const [sections, refreshed] = await Promise.all([outlineFor(db, courseId), publishValidation(db, updated, courseId)])
+  return c.json({ course: updated, sections, publish: refreshed })
 })
 
-app.post('/api/teacher/courses/:courseId/unpublish', (c) => {
+app.post('/api/teacher/courses/:courseId/unpublish', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const courseId = courseIdParam(c)
-  const updated = setCourseStatus(teacher.teacherId, courseId, 'UNPUBLISHED')
+  const updated = await setCourseStatus(db, teacher.teacherId, courseId, 'UNPUBLISHED')
   if (!updated) return notYours()
-  return c.json({ course: updated, sections: outlineFor(courseId), publish: publishValidation(updated, courseId) })
+  const [sections, publish] = await Promise.all([outlineFor(db, courseId), publishValidation(db, updated, courseId)])
+  return c.json({ course: updated, sections, publish })
 })
 
 /* ------------------------------ lectures ------------------------------ */
@@ -334,18 +370,17 @@ function parseIso(value: unknown): { ok: true; value: string | null } | { ok: fa
 }
 
 /** Every lecture across this teacher's courses, plus the picker options. */
-app.get('/api/teacher/lectures', (c) => {
+app.get('/api/teacher/lectures', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const items = lecturesForTeacher(teacher.teacherId)
-  const courses = coursesForTeacher(teacher.teacherId).map((course) => ({ id: course.id, title: course.title }))
-  return c.json({ items, courses, totalCount: items.length })
+  const [items, courses] = await Promise.all([lecturesForTeacher(c.env.DB, teacher.teacherId), coursesForTeacher(c.env.DB, teacher.teacherId)])
+  return c.json({ items, courses: courses.map((course) => ({ id: course.id, title: course.title })), totalCount: items.length })
 })
 
-app.get('/api/teacher/lectures/:lectureId', (c) => {
+app.get('/api/teacher/lectures/:lectureId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const lecture = lectureDetail(teacher.teacherId, c.req.param('lectureId'))
+  const lecture = await lectureDetail(c.env.DB, teacher.teacherId, c.req.param('lectureId'))
   if (!lecture) return lectureNotFound()
   return c.json(lecture)
 })
@@ -353,8 +388,9 @@ app.get('/api/teacher/lectures/:lectureId', (c) => {
 app.patch('/api/teacher/lectures/:lectureId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const lectureId = c.req.param('lectureId')
-  if (!lectureDetail(teacher.teacherId, lectureId)) return lectureNotFound()
+  if (!(await lectureDetail(db, teacher.teacherId, lectureId))) return lectureNotFound()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
 
@@ -390,28 +426,29 @@ app.patch('/api/teacher/lectures/:lectureId', async (c) => {
     return invalid({ availableUntil: 'The closing date must be after the opening date.' })
   }
 
-  const updated = applyLecturePatch(teacher.teacherId, lectureId, patch)
+  const updated = await applyLecturePatch(db, teacher.teacherId, lectureId, patch)
   if (!updated) return lectureNotFound()
   return c.json(updated)
 })
 
-app.post('/api/teacher/lectures/:lectureId/publish', (c) => {
+app.post('/api/teacher/lectures/:lectureId/publish', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const lectureId = c.req.param('lectureId')
-  const lecture = lectureDetail(teacher.teacherId, lectureId)
+  const lecture = await lectureDetail(db, teacher.teacherId, lectureId)
   if (!lecture) return lectureNotFound()
   if (!lecture.publish.canPublish) return c.json({ error: 'Some publish requirements are unmet.', publish: lecture.publish }, 422)
-  const updated = setLectureStatus(teacher.teacherId, lectureId, 'PUBLISHED')
+  const updated = await setLectureStatus(db, teacher.teacherId, lectureId, 'PUBLISHED')
   if (!updated) return lectureNotFound()
   return c.json(updated)
 })
 
-app.post('/api/teacher/lectures/:lectureId/unpublish', (c) => {
+app.post('/api/teacher/lectures/:lectureId/unpublish', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
   const lectureId = c.req.param('lectureId')
-  const updated = setLectureStatus(teacher.teacherId, lectureId, 'DRAFT')
+  const updated = await setLectureStatus(c.env.DB, teacher.teacherId, lectureId, 'DRAFT')
   if (!updated) return lectureNotFound()
   return c.json(updated)
 })
@@ -421,8 +458,9 @@ const RESOURCE_KINDS = ['PDF', 'SLIDES', 'DATASET', 'LINK', 'OTHER'] as const
 app.post('/api/teacher/lectures/:lectureId/resources', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const lectureId = c.req.param('lectureId')
-  if (!lectureDetail(teacher.teacherId, lectureId)) return lectureNotFound()
+  if (!(await lectureDetail(db, teacher.teacherId, lectureId))) return lectureNotFound()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
 
@@ -436,17 +474,18 @@ app.post('/api/teacher/lectures/:lectureId/resources', async (c) => {
     return invalid({ externalUrl: 'Paste a full http(s) link. Uploading files is not connected yet.' })
   }
 
-  const updated = addLectureResource(teacher.teacherId, lectureId, { title, kind, externalUrl: url, sizeBytes: null })
+  const updated = await addLectureResource(db, teacher.teacherId, lectureId, { title, kind, externalUrl: url, sizeBytes: null })
   if (!updated) return lectureNotFound()
   return c.json(updated, 201)
 })
 
-app.delete('/api/teacher/lectures/:lectureId/resources/:resourceId', (c) => {
+app.delete('/api/teacher/lectures/:lectureId/resources/:resourceId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const lectureId = c.req.param('lectureId')
-  if (!lectureDetail(teacher.teacherId, lectureId)) return lectureNotFound()
-  const updated = removeLectureResource(teacher.teacherId, lectureId, c.req.param('resourceId'))
+  if (!(await lectureDetail(db, teacher.teacherId, lectureId))) return lectureNotFound()
+  const updated = await removeLectureResource(db, teacher.teacherId, lectureId, c.req.param('resourceId'))
   if (!updated) return c.json({ error: 'That resource could not be found.' }, 404)
   return c.json(updated)
 })
@@ -466,24 +505,26 @@ function textFrom(value: unknown, max: number): { ok: true; value: string | unde
 }
 
 /** Course ids the caller may attach: shape errors are 422, someone else's course is 404. */
-function courseIdsFrom(teacherId: string, value: unknown): { ok: true; value: string[] } | { ok: false; code: 422 | 404 } {
+async function courseIdsFrom(db: D1Database, teacherId: string, value: unknown): Promise<{ ok: true; value: string[] } | { ok: false; code: 422 | 404 }> {
   if (!Array.isArray(value) || !value.length || value.some((v) => typeof v !== 'string')) return { ok: false, code: 422 }
   const ids = [...new Set(value as string[])]
-  if (ids.some((id) => !courseForTeacher(teacherId, id))) return { ok: false, code: 404 }
+  for (const id of ids) {
+    if (!(await courseForTeacher(db, teacherId, id))) return { ok: false, code: 404 }
+  }
   return { ok: true, value: ids }
 }
 
-app.get('/api/teacher/subjects', (c) => {
+app.get('/api/teacher/subjects', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const items = subjectsForTeacher(teacher.teacherId)
-  const courses = coursesForTeacher(teacher.teacherId).map((course) => ({ id: course.id, title: course.title }))
-  return c.json({ items, courses, totalCount: items.length })
+  const [items, courses] = await Promise.all([subjectsForTeacher(c.env.DB, teacher.teacherId), coursesForTeacher(c.env.DB, teacher.teacherId)])
+  return c.json({ items, courses: courses.map((course) => ({ id: course.id, title: course.title })), totalCount: items.length })
 })
 
 app.post('/api/teacher/subjects', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
 
@@ -491,20 +532,20 @@ app.post('/api/teacher/subjects', async (c) => {
   if (!name) return invalid({ name: 'Give the subject a name of 2–120 characters.' })
   const description = textFrom(body.description, 2000)
   if (!description.ok) return invalid({ description: 'Describe the subject in plain text, under 2,000 characters.' })
-  const courseIds = courseIdsFrom(teacher.teacherId, body.courseIds)
+  const courseIds = await courseIdsFrom(db, teacher.teacherId, body.courseIds)
   if (!courseIds.ok) {
     return courseIds.code === 404 ? notYours() : invalid({ courseIds: 'Choose at least one of your training courses.' })
   }
 
-  const subject = createSubject(teacher.teacherId, { name, description: description.value ?? '', courseIds: courseIds.value })
+  const subject = await createSubject(db, teacher.teacherId, { name, description: description.value ?? '', courseIds: courseIds.value })
   if (!subject) return notYours()
   return c.json(subject, 201)
 })
 
-app.get('/api/teacher/subjects/:subjectId', (c) => {
+app.get('/api/teacher/subjects/:subjectId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const subject = subjectDetail(teacher.teacherId, c.req.param('subjectId'))
+  const subject = await subjectDetail(c.env.DB, teacher.teacherId, c.req.param('subjectId'))
   if (!subject) return subjectNotFound()
   return c.json(subject)
 })
@@ -512,8 +553,9 @@ app.get('/api/teacher/subjects/:subjectId', (c) => {
 app.patch('/api/teacher/subjects/:subjectId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const subjectId = c.req.param('subjectId')
-  if (!subjectDetail(teacher.teacherId, subjectId)) return subjectNotFound()
+  if (!(await subjectDetail(db, teacher.teacherId, subjectId))) return subjectNotFound()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
 
@@ -529,7 +571,7 @@ app.patch('/api/teacher/subjects/:subjectId', async (c) => {
     patch.description = description.value
   }
   if (body.courseIds !== undefined) {
-    const courseIds = courseIdsFrom(teacher.teacherId, body.courseIds)
+    const courseIds = await courseIdsFrom(db, teacher.teacherId, body.courseIds)
     if (!courseIds.ok) {
       return courseIds.code === 404 ? notYours() : invalid({ courseIds: 'Choose at least one of your training courses.' })
     }
@@ -537,28 +579,29 @@ app.patch('/api/teacher/subjects/:subjectId', async (c) => {
   }
   if (!Object.keys(patch).length) return invalid({ form: 'Change something before saving.' })
 
-  const updated = updateSubject(teacher.teacherId, subjectId, patch)
+  const updated = await updateSubject(db, teacher.teacherId, subjectId, patch)
   if (!updated) return subjectNotFound()
   return c.json(updated)
 })
 
-app.post('/api/teacher/subjects/:subjectId/publish', (c) => {
+app.post('/api/teacher/subjects/:subjectId/publish', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const subjectId = c.req.param('subjectId')
-  const subject = subjectDetail(teacher.teacherId, subjectId)
+  const subject = await subjectDetail(db, teacher.teacherId, subjectId)
   if (!subject) return subjectNotFound()
   if (!subject.publish.canPublish) return c.json({ error: 'Some publish requirements are unmet.', publish: subject.publish }, 422)
-  const updated = setSubjectStatus(teacher.teacherId, subjectId, 'PUBLISHED')
+  const updated = await setSubjectStatus(db, teacher.teacherId, subjectId, 'PUBLISHED')
   if (!updated) return subjectNotFound()
   return c.json(updated)
 })
 
-app.post('/api/teacher/subjects/:subjectId/unpublish', (c) => {
+app.post('/api/teacher/subjects/:subjectId/unpublish', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
   const subjectId = c.req.param('subjectId')
-  const updated = setSubjectStatus(teacher.teacherId, subjectId, 'DRAFT')
+  const updated = await setSubjectStatus(c.env.DB, teacher.teacherId, subjectId, 'DRAFT')
   if (!updated) return subjectNotFound()
   return c.json(updated)
 })
@@ -566,8 +609,9 @@ app.post('/api/teacher/subjects/:subjectId/unpublish', (c) => {
 app.post('/api/teacher/subjects/:subjectId/topics', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const subjectId = c.req.param('subjectId')
-  if (!subjectDetail(teacher.teacherId, subjectId)) return subjectNotFound()
+  if (!(await subjectDetail(db, teacher.teacherId, subjectId))) return subjectNotFound()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
 
@@ -576,7 +620,7 @@ app.post('/api/teacher/subjects/:subjectId/topics', async (c) => {
   const description = textFrom(body.description, 1000)
   if (!description.ok) return invalid({ description: 'Describe the topic in plain text, under 1,000 characters.' })
 
-  const updated = addTopic(teacher.teacherId, subjectId, { title, description: description.value ?? '' })
+  const updated = await addTopic(db, teacher.teacherId, subjectId, { title, description: description.value ?? '' })
   if (!updated) return subjectNotFound()
   return c.json(updated, 201)
 })
@@ -584,6 +628,7 @@ app.post('/api/teacher/subjects/:subjectId/topics', async (c) => {
 app.patch('/api/teacher/topics/:topicId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const topicId = c.req.param('topicId')
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
@@ -601,15 +646,15 @@ app.patch('/api/teacher/topics/:topicId', async (c) => {
   }
   if (!Object.keys(patch).length) return invalid({ form: 'Change something before saving.' })
 
-  const updated = updateTopic(teacher.teacherId, topicId, patch)
+  const updated = await updateTopic(db, teacher.teacherId, topicId, patch)
   if (!updated) return topicNotFound()
   return c.json(updated)
 })
 
-app.delete('/api/teacher/topics/:topicId', (c) => {
+app.delete('/api/teacher/topics/:topicId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const updated = deleteTopic(teacher.teacherId, c.req.param('topicId'))
+  const updated = await deleteTopic(c.env.DB, teacher.teacherId, c.req.param('topicId'))
   if (!updated) return topicNotFound()
   return c.json(updated)
 })
@@ -617,6 +662,7 @@ app.delete('/api/teacher/topics/:topicId', (c) => {
 app.post('/api/teacher/topics/:topicId/lessons', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const topicId = c.req.param('topicId')
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
@@ -626,7 +672,7 @@ app.post('/api/teacher/topics/:topicId/lessons', async (c) => {
   const description = textFrom(body.description, 1000)
   if (!description.ok) return invalid({ description: 'Describe the lesson in plain text, under 1,000 characters.' })
 
-  const updated = addSyllabusLesson(teacher.teacherId, topicId, { title, description: description.value ?? '' })
+  const updated = await addSyllabusLesson(db, teacher.teacherId, topicId, { title, description: description.value ?? '' })
   if (!updated) return topicNotFound()
   return c.json(updated, 201)
 })
@@ -634,6 +680,7 @@ app.post('/api/teacher/topics/:topicId/lessons', async (c) => {
 app.patch('/api/teacher/subject-lessons/:lessonId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const lessonId = c.req.param('lessonId')
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
@@ -651,15 +698,15 @@ app.patch('/api/teacher/subject-lessons/:lessonId', async (c) => {
   }
   if (!Object.keys(patch).length) return invalid({ form: 'Change something before saving.' })
 
-  const updated = updateSyllabusLesson(teacher.teacherId, lessonId, patch)
+  const updated = await updateSyllabusLesson(db, teacher.teacherId, lessonId, patch)
   if (!updated) return syllabusLessonNotFound()
   return c.json(updated)
 })
 
-app.delete('/api/teacher/subject-lessons/:lessonId', (c) => {
+app.delete('/api/teacher/subject-lessons/:lessonId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const updated = deleteSyllabusLesson(teacher.teacherId, c.req.param('lessonId'))
+  const updated = await deleteSyllabusLesson(c.env.DB, teacher.teacherId, c.req.param('lessonId'))
   if (!updated) return syllabusLessonNotFound()
   return c.json(updated)
 })
@@ -667,8 +714,9 @@ app.delete('/api/teacher/subject-lessons/:lessonId', (c) => {
 app.post('/api/teacher/subjects/:subjectId/reorder', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const subjectId = c.req.param('subjectId')
-  if (!subjectDetail(teacher.teacherId, subjectId)) return subjectNotFound()
+  if (!(await subjectDetail(db, teacher.teacherId, subjectId))) return subjectNotFound()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
 
@@ -676,7 +724,7 @@ app.post('/api/teacher/subjects/:subjectId/reorder', async (c) => {
   const direction = body.direction === 'UP' || body.direction === 'DOWN' ? body.direction : null
   if (!kind || !direction || typeof body.id !== 'string') return invalid({ form: 'Choose an item and a direction.' })
 
-  const result = moveSubjectItem(teacher.teacherId, subjectId, kind, body.id, direction)
+  const result = await moveSubjectItem(db, teacher.teacherId, subjectId, kind, body.id, direction)
   if (!result) return subjectNotFound()
   if (!result.moved) return c.json({ error: 'That item cannot move any further.', subject: result.detail }, 409)
   return c.json(result.detail)
@@ -686,13 +734,14 @@ app.post('/api/teacher/subjects/:subjectId/reorder', async (c) => {
 app.post('/api/teacher/subject-lessons/:lessonId/lectures', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
+  const db = c.env.DB
   const lessonId = c.req.param('lessonId')
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
 
   if (body.lectureId !== undefined) {
     if (typeof body.lectureId !== 'string') return invalid({ lectureId: 'Choose a lecture.' })
-    const result = attachExistingLecture(teacher.teacherId, lessonId, body.lectureId)
+    const result = await attachExistingLecture(db, teacher.teacherId, lessonId, body.lectureId)
     if (result.status === 'CONFLICT') {
       return c.json({ error: 'That lecture already delivers another syllabus lesson.' }, 409)
     }
@@ -701,7 +750,7 @@ app.post('/api/teacher/subject-lessons/:lessonId/lectures', async (c) => {
   }
 
   if (typeof body.courseId !== 'string') return invalid({ courseId: 'Choose the course this lecture is taught in.' })
-  if (!courseForTeacher(teacher.teacherId, body.courseId)) return notYours()
+  if (!(await courseForTeacher(db, teacher.teacherId, body.courseId))) return notYours()
   const kind = body.kind === 'TEXT' ? 'TEXT' : body.kind === 'VIDEO' ? 'VIDEO' : null
   if (!kind) return invalid({ kind: 'Choose video or text.' })
   const minutes = Number(body.estimatedMinutes)
@@ -709,17 +758,276 @@ app.post('/api/teacher/subject-lessons/:lessonId/lectures', async (c) => {
     return invalid({ estimatedMinutes: 'Enter a duration between 1 and 600 minutes.' })
   }
 
-  const result = createLectureForLesson(teacher.teacherId, lessonId, { courseId: body.courseId, kind, estimatedMinutes: minutes })
+  const result = await createLectureForLesson(db, teacher.teacherId, lessonId, { courseId: body.courseId, kind, estimatedMinutes: minutes })
   if (result.status !== 'OK') return syllabusLessonNotFound()
   return c.json(result.detail, 201)
 })
 
-app.delete('/api/teacher/subject-lessons/:lessonId/lectures/:lectureId', (c) => {
+app.delete('/api/teacher/subject-lessons/:lessonId/lectures/:lectureId', async (c) => {
   const teacher = teacherFrom(c)
   if (!teacher) return noSession()
-  const updated = detachLecture(teacher.teacherId, c.req.param('lessonId'), c.req.param('lectureId'))
+  const updated = await detachLecture(c.env.DB, teacher.teacherId, c.req.param('lessonId'), c.req.param('lectureId'))
   if (updated.status !== 'OK') return c.json({ error: 'That lecture is not attached to this lesson.' }, 404)
   return c.json(updated.detail)
+})
+
+/* ------------------------ assignments and marking ----------------------- */
+
+const assignmentNotFound = () => Response.json({ error: 'That assignment is not in one of your courses.' }, { status: 404 })
+const submissionNotFound = () => Response.json({ error: 'That submission is not in one of your courses.' }, { status: 404 })
+
+const LATE_POLICIES: LatePolicy[] = ['BLOCK', 'ALLOW', 'MARK_LATE']
+
+const latePolicyFrom = (value: unknown): LatePolicy | null => LATE_POLICIES.find((p) => p === value) ?? null
+
+/** A whole number in range, or null when the value is not one. */
+function wholeNumber(value: unknown, min: number, max: number): number | null {
+  const n = Number(value)
+  return Number.isInteger(n) && n >= min && n <= max ? n : null
+}
+
+/** Every assignment in this teacher's courses, plus the course picker. */
+app.get('/api/teacher/assignments', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const [items, courses] = await Promise.all([assignmentsForTeacher(c.env.DB, teacher.teacherId), coursesForTeacher(c.env.DB, teacher.teacherId)])
+  return c.json({ items, courses: courses.map((course) => ({ id: course.id, title: course.title })), totalCount: items.length })
+})
+
+app.post('/api/teacher/assignments', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const db = c.env.DB
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const courseId = typeof body.courseId === 'string' ? body.courseId : ''
+  if (!courseId) return invalid({ courseId: 'Choose the course this assignment belongs to.' })
+  if (!(await courseForTeacher(db, teacher.teacherId, courseId))) return notYours()
+
+  const title = titleFrom(body)
+  if (!title) return invalid({ title: 'Give the assignment a title of 2–120 characters.' })
+
+  const instructions = textFrom(body.instructions, 5000)
+  if (!instructions.ok) return invalid({ instructions: 'Instructions must be plain text under 5,000 characters.' })
+
+  const parsedOpen = parseIso(body.opensAt ?? null)
+  if (!parsedOpen.ok) return invalid({ opensAt: 'Enter a valid opening date and time.' })
+  const opensAt = parsedOpen.value ?? new Date().toISOString()
+
+  const parsedDue = parseIso(body.dueAt ?? null)
+  if (!parsedDue.ok || !parsedDue.value) return invalid({ dueAt: 'Enter a valid due date and time.' })
+  if (Date.parse(parsedDue.value) <= Date.parse(opensAt)) return invalid({ dueAt: 'The due date must be after the opening date.' })
+
+  const maxScore = body.maxScore === undefined ? 100 : wholeNumber(body.maxScore, 1, 1000)
+  if (maxScore === null) return invalid({ maxScore: 'Enter a maximum score between 1 and 1,000.' })
+
+  const attemptsAllowed = body.attemptsAllowed === undefined ? 1 : wholeNumber(body.attemptsAllowed, 1, 10)
+  if (attemptsAllowed === null) return invalid({ attemptsAllowed: 'Allow between 1 and 10 attempts.' })
+
+  const latePolicy = body.latePolicy === undefined ? 'MARK_LATE' : latePolicyFrom(body.latePolicy)
+  if (!latePolicy) return invalid({ latePolicy: 'Choose what happens to late work.' })
+
+  if (body.allowFileUpload !== undefined && typeof body.allowFileUpload !== 'boolean') {
+    return invalid({ allowFileUpload: 'Choose whether students may attach a file.' })
+  }
+
+  const assignment = await createAssignment(db, teacher.teacherId, {
+    courseId,
+    title,
+    instructions: instructions.value ?? '',
+    opensAt,
+    dueAt: parsedDue.value,
+    latePolicy,
+    attemptsAllowed,
+    maxScore,
+    allowFileUpload: body.allowFileUpload === true,
+  })
+  if (!assignment) return notYours()
+  return c.json(assignment, 201)
+})
+
+app.get('/api/teacher/assignments/:assignmentId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const assignment = await assignmentDetail(c.env.DB, teacher.teacherId, c.req.param('assignmentId'))
+  if (!assignment) return assignmentNotFound()
+  return c.json(assignment)
+})
+
+app.patch('/api/teacher/assignments/:assignmentId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const db = c.env.DB
+  const assignmentId = c.req.param('assignmentId')
+  const existing = await assignmentDetail(db, teacher.teacherId, assignmentId)
+  if (!existing) return assignmentNotFound()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const patch: AssignmentPatch = {}
+
+  if (body.title !== undefined) {
+    const title = titleFrom(body)
+    if (!title) return invalid({ title: 'Give the assignment a title of 2–120 characters.' })
+    patch.title = title
+  }
+  if (body.instructions !== undefined) {
+    const instructions = textFrom(body.instructions, 5000)
+    if (!instructions.ok) return invalid({ instructions: 'Instructions must be plain text under 5,000 characters.' })
+    patch.instructions = instructions.value ?? ''
+  }
+  for (const field of ['opensAt', 'dueAt'] as const) {
+    if (body[field] === undefined) continue
+    const parsed = parseIso(body[field])
+    if (!parsed.ok || !parsed.value) return invalid({ [field]: 'Enter a valid date and time.' })
+    patch[field] = parsed.value
+  }
+  if (body.latePolicy !== undefined) {
+    const policy = latePolicyFrom(body.latePolicy)
+    if (!policy) return invalid({ latePolicy: 'Choose what happens to late work.' })
+    patch.latePolicy = policy
+  }
+  if (body.attemptsAllowed !== undefined) {
+    const attempts = wholeNumber(body.attemptsAllowed, 1, 10)
+    if (attempts === null) return invalid({ attemptsAllowed: 'Allow between 1 and 10 attempts.' })
+    patch.attemptsAllowed = attempts
+  }
+  if (body.maxScore !== undefined) {
+    const score = wholeNumber(body.maxScore, 1, 1000)
+    if (score === null) return invalid({ maxScore: 'Enter a maximum score between 1 and 1,000.' })
+    patch.maxScore = score
+  }
+  if (body.allowFileUpload !== undefined) {
+    if (typeof body.allowFileUpload !== 'boolean') return invalid({ allowFileUpload: 'Choose whether students may attach a file.' })
+    patch.allowFileUpload = body.allowFileUpload
+  }
+  if (!Object.keys(patch).length) return invalid({ form: 'Change something before saving.' })
+
+  const opens = patch.opensAt ?? existing.opensAt
+  const due = patch.dueAt ?? existing.dueAt
+  if (Date.parse(due) <= Date.parse(opens)) return invalid({ dueAt: 'The due date must be after the opening date.' })
+
+  const updated = await updateAssignment(db, teacher.teacherId, assignmentId, patch)
+  if (!updated) return assignmentNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/assignments/:assignmentId/publish', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const db = c.env.DB
+  const assignmentId = c.req.param('assignmentId')
+  const assignment = await assignmentDetail(db, teacher.teacherId, assignmentId)
+  if (!assignment) return assignmentNotFound()
+  if (!assignment.publish.canPublish) return c.json({ error: 'Some publish requirements are unmet.', publish: assignment.publish }, 422)
+  const updated = await setAssignmentPublished(db, teacher.teacherId, assignmentId, true)
+  if (!updated) return assignmentNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/assignments/:assignmentId/unpublish', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const assignmentId = c.req.param('assignmentId')
+  const updated = await setAssignmentPublished(c.env.DB, teacher.teacherId, assignmentId, false)
+  if (!updated) return assignmentNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/assignments/:assignmentId/close', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const assignmentId = c.req.param('assignmentId')
+  const updated = await setAssignmentClosed(c.env.DB, teacher.teacherId, assignmentId, true)
+  if (!updated) return assignmentNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/assignments/:assignmentId/reopen', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const assignmentId = c.req.param('assignmentId')
+  const updated = await setAssignmentClosed(c.env.DB, teacher.teacherId, assignmentId, false)
+  if (!updated) return assignmentNotFound()
+  return c.json(updated)
+})
+
+/** The marking queue: every submission in this teacher's courses. */
+app.get('/api/teacher/submissions', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  return c.json(await submissionsForTeacher(c.env.DB, teacher.teacherId))
+})
+
+app.get('/api/teacher/submissions/:submissionId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const submission = await submissionDetail(c.env.DB, teacher.teacherId, c.req.param('submissionId'))
+  if (!submission) return submissionNotFound()
+  return c.json(submission)
+})
+
+/** Save draft feedback and a mark. The student sees nothing until it is published. */
+app.patch('/api/teacher/submissions/:submissionId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const db = c.env.DB
+  const submissionId = c.req.param('submissionId')
+  const submission = await submissionDetail(db, teacher.teacherId, submissionId)
+  if (!submission) return submissionNotFound()
+  if (submission.publishedAt) return c.json({ error: 'Withdraw the published grade before editing it.' }, 409)
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  let score: number | null = null
+  if (body.score !== undefined && body.score !== null && body.score !== '') {
+    const parsed = wholeNumber(body.score, 0, submission.maxScore)
+    if (parsed === null) return invalid({ score: `Enter a whole number from 0 to ${submission.maxScore}.` })
+    score = parsed
+  }
+  if (body.feedback !== undefined && typeof body.feedback !== 'string') return invalid({ feedback: 'Feedback must be plain text.' })
+  const feedback = typeof body.feedback === 'string' ? body.feedback : submission.feedback
+  if (feedback.length > 5000) return invalid({ feedback: 'Feedback is limited to 5,000 characters.' })
+
+  const updated = await saveGrade(db, teacher.teacherId, submissionId, { score, feedback })
+  if (!updated) return submissionNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/submissions/:submissionId/publish', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const db = c.env.DB
+  const submissionId = c.req.param('submissionId')
+  const submission = await submissionDetail(db, teacher.teacherId, submissionId)
+  if (!submission) return submissionNotFound()
+  if (submission.publishedAt) return c.json({ error: 'This grade is already published.' }, 409)
+  if (submission.score === null) return invalid({ score: 'Save a score before publishing the grade.' })
+  const updated = await publishGrade(db, teacher.teacherId, submissionId)
+  if (!updated) return submissionNotFound()
+  return c.json(updated)
+})
+
+/** Take a released mark back so it can be corrected. The reason is kept. */
+app.post('/api/teacher/submissions/:submissionId/withdraw', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const db = c.env.DB
+  const submissionId = c.req.param('submissionId')
+  const submission = await submissionDetail(db, teacher.teacherId, submissionId)
+  if (!submission) return submissionNotFound()
+  if (!submission.publishedAt) return c.json({ error: 'That grade is not published.' }, 409)
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
+  if (reason.length < 5) return invalid({ reason: 'Give a short reason for withdrawing the grade.' })
+  if (reason.length > 500) return invalid({ reason: 'Keep the reason under 500 characters.' })
+
+  const updated = await withdrawGrade(db, teacher.teacherId, submissionId, reason)
+  if (!updated) return submissionNotFound()
+  return c.json(updated)
 })
 
 /* -------------------------- student catalogue --------------------------- */
@@ -727,13 +1035,13 @@ app.delete('/api/teacher/subject-lessons/:lessonId/lectures/:lectureId', (c) => 
 /* Public for now: only published subjects, lessons with a published lecture and
    published lectures themselves are included. Enrolment scoping needs the
    student session that does not exist yet, so it is not pretended here. */
-app.get('/api/subjects', (c) => {
-  const items = publishedSubjects()
+app.get('/api/subjects', async (c) => {
+  const items = await publishedSubjects(c.env.DB)
   return c.json({ items, totalCount: items.length })
 })
 
-app.get('/api/subjects/:subjectId', (c) => {
-  const subject = publishedSubjectDetail(c.req.param('subjectId'))
+app.get('/api/subjects/:subjectId', async (c) => {
+  const subject = await publishedSubjectDetail(c.env.DB, c.req.param('subjectId'))
   if (!subject) return c.json({ error: 'That subject is not published.' }, 404)
   return c.json(subject)
 })

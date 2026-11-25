@@ -1,401 +1,357 @@
 /*
-  Curriculum fixtures: modules (sections) → chapters → lectures.
+  Curriculum: modules (sections) → chapters → lectures, stored in D1.
 
-  These rows are mutable for the life of the Worker isolate, so add / reorder /
-  delete behave like a real write path (including the 404s for someone else's
-  course) while D1 does not exist yet. Restarting the dev server resets them.
+  Ordering lives in `position`, 0-based and unique per parent. Moving a row
+  swaps positions with its neighbour rather than deleting and recreating
+  anything, so a lecture keeps its id across a reorder and every subject link
+  that points at it survives.
 
-  Ordering lives in `position`, 0-based and unique per parent. Moving a row swaps
-  positions with its neighbour rather than deleting and recreating anything.
+  Deleting a section, chapter or lecture also removes its dependent rows
+  explicitly instead of relying on cascades, so the same behaviour holds whether
+  or not SQLite's foreign_keys pragma is on in the environment serving the DB.
 */
 import type { PublishRequirementDTO, PublishValidationDTO } from '../contracts/catalog'
 import type { TeacherLessonDTO, TeacherOutlineSection } from '../contracts/teaching'
+import { execute, newId, nowIso, query, queryOne, type Db } from './sql'
 
-type ChapterSeed = { title: string; lessons: string[] }
-type ModuleSeed = { title: string; chapters: ChapterSeed[] }
-
-const SPECS: Record<string, { modules: ModuleSeed[]; drafts: number }> = {
-  'crs-ppl': {
-    drafts: 1,
-    modules: [
-      {
-        title: 'Ground school',
-        chapters: [
-          { title: 'Air law', lessons: ['Rules of the air', 'Licences and documents', 'Airspace classes', 'Aircraft and passenger safety'] },
-          { title: 'Meteorology', lessons: ['The atmosphere and pressure', 'Clouds and icing', 'Reading a METAR and TAF'] },
-        ],
-      },
-      {
-        title: 'Flight phase',
-        chapters: [
-          { title: 'Circuits', lessons: ['Effects of controls', 'The circuit pattern', 'First solo briefing'] },
-          { title: 'Navigation', lessons: ['Dead reckoning', 'Planning a cross-country', 'In-flight diversion', 'Radio navigation basics'] },
-        ],
-      },
-    ],
-  },
-  'crs-cpl': {
-    drafts: 2,
-    modules: [
-      {
-        title: 'Air law and operations',
-        chapters: [
-          { title: 'Air law', lessons: ['International conventions', 'Licensing and ratings', 'Operational procedures'] },
-          { title: 'Operations', lessons: ['Fuel and alternates', 'Crew duty limits'] },
-        ],
-      },
-      {
-        title: 'Aircraft and performance',
-        chapters: [
-          { title: 'Systems', lessons: ['Powerplant', 'Hydraulics', 'Electrical'] },
-          { title: 'Performance', lessons: ['Take-off performance', 'Landing performance', 'Mass and balance'] },
-        ],
-      },
-      {
-        title: 'Flight planning',
-        chapters: [
-          { title: 'Planning', lessons: ['Route planning', 'Fuel planning', 'Flight plan filing'] },
-          { title: 'Instruments', lessons: ['Gyroscopic instruments', 'Radio navigation aids'] },
-        ],
-      },
-      {
-        title: 'Instrument and human performance',
-        chapters: [
-          { title: 'Instrument flight', lessons: ['Basic instrument flight', 'Holding patterns', 'Approach basics'] },
-          { title: 'Human performance', lessons: ['Fatigue', 'Decision making', 'Threat and error'] },
-        ],
-      },
-    ],
-  },
-  'crs-ir': {
-    drafts: 9,
-    modules: [
-      {
-        title: 'Instrument procedures',
-        chapters: [
-          { title: 'Approaches', lessons: ['ILS to minima', 'RNAV approaches', 'Missed approach'] },
-          { title: 'Holding', lessons: ['Holding entries', 'Timing and wind'] },
-        ],
-      },
-      {
-        title: 'Simulator and skills test',
-        chapters: [
-          { title: 'Simulator', lessons: ['Simulator familiarisation', 'Partial panel'] },
-          { title: 'Skills test', lessons: ['Skills test brief', 'Debrief and review'] },
-        ],
-      },
-    ],
-  },
-  'crs-a320': {
-    drafts: 0,
-    modules: [
-      {
-        title: 'General and airframe',
-        chapters: [
-          { title: 'Airframe', lessons: ['A320 family overview', 'Doors and exits'] },
-          { title: 'Flight controls', lessons: ['Fly-by-wire basics', 'Flight control laws'] },
-        ],
-      },
-      {
-        title: 'Systems',
-        chapters: [
-          { title: 'Hydraulics', lessons: ['Green, blue and yellow', 'Abnormal hydraulics'] },
-          { title: 'Powerplant', lessons: ['CFM engines', 'Fuel system'] },
-          { title: 'Automation', lessons: ['FMGS overview', 'Autopilot modes'] },
-        ],
-      },
-      {
-        title: 'Operations',
-        chapters: [
-          { title: 'Performance', lessons: ['Take-off performance', 'Landing performance'] },
-          { title: 'SOPs', lessons: ['Normal procedures', 'Abnormal and emergency'] },
-          { title: 'Assessment', lessons: ['Ground assessment brief', 'Assessment debrief'] },
-        ],
-      },
-    ],
-  },
-}
-
-type SectionRow = { id: string; courseId: string; title: string; position: number }
-type ChapterRow = { id: string; sectionId: string; title: string; position: number }
+type SectionRow = { id: string; course_id: string; title: string; position: number; created_at: string; updated_at: string }
+type ChapterRow = { id: string; section_id: string; title: string; position: number; created_at: string; updated_at: string }
 type LessonRow = {
   id: string
-  sectionId: string
-  chapterId: string | null
+  section_id: string
+  chapter_id: string | null
   title: string
   kind: 'VIDEO' | 'TEXT'
   position: number
-  estimatedMinutes: number
+  estimated_minutes: number
   status: 'DRAFT' | 'PUBLISHED'
-  mediaStatus: 'READY' | 'PROCESSING' | 'NONE'
-  isPreview: boolean
+  media_status: 'READY' | 'PROCESSING' | 'NONE'
+  is_preview: number
+  created_at: string
+  updated_at: string
 }
 
-const seedTime = '2026-09-12T10:00:00.000Z'
+export type CourseCounts = { sectionCount: number; lectureCount: number; draftLectureCount: number; publishedCount: number }
 
-const sections: SectionRow[] = []
-const chapters: ChapterRow[] = []
-const lessons: LessonRow[] = []
-const seeded = new Set<string>()
-
-/** Build a course's curriculum once, on first access. */
-function seed(courseId: string) {
-  if (seeded.has(courseId)) return
-  seeded.add(courseId)
-  const spec = SPECS[courseId]
-  if (!spec) return
-
-  const all: LessonRow[] = []
-  spec.modules.forEach((m, mi) => {
-    const sectionId = `sec-${courseId}-${mi + 1}`
-    sections.push({ id: sectionId, courseId, title: m.title, position: mi })
-    m.chapters.forEach((c, ci) => {
-      const chapterId = `ch-${courseId}-${mi + 1}-${ci + 1}`
-      chapters.push({ id: chapterId, sectionId, title: c.title, position: ci })
-      c.lessons.forEach((title, li) => {
-        all.push({
-          id: `les-${courseId}-${mi + 1}-${ci + 1}-${li + 1}`,
-          sectionId,
-          chapterId,
-          title,
-          kind: 'VIDEO',
-          position: li,
-          estimatedMinutes: 35 + ((mi + ci + li) % 4) * 10,
-          status: 'PUBLISHED',
-          mediaStatus: 'READY',
-          isPreview: mi === 0 && ci === 0 && li === 0,
-        })
-      })
-    })
-  })
-
-  // The last N lectures of a course are still drafts, which is what the
-  // publish checklist and the "lectures in draft" count report. Guard against
-  // zero: slice(-0) is slice(0), which would mark the whole course as draft.
-  if (spec.drafts > 0) {
-    all.slice(-spec.drafts).forEach((l) => {
-      l.status = 'DRAFT'
-      l.mediaStatus = 'NONE'
-    })
-  }
-  lessons.push(...all)
-}
-
-const once = (courseId: string) => {
-  seed(courseId)
-  return sections.some((s) => s.courseId === courseId)
-}
-
-export function courseCounts(courseId: string) {
-  once(courseId)
-  const ids = new Set(sections.filter((s) => s.courseId === courseId).map((s) => s.id))
-  const rows = lessons.filter((l) => ids.has(l.sectionId))
-  return {
-    sectionCount: sections.filter((s) => s.courseId === courseId).length,
-    lectureCount: rows.length,
-    draftLectureCount: rows.filter((l) => l.status === 'DRAFT').length,
-  }
-}
-
-export function publishedLessonCount(courseId: string) {
-  once(courseId)
-  const ids = new Set(sections.filter((s) => s.courseId === courseId).map((s) => s.id))
-  return lessons.filter((l) => ids.has(l.sectionId) && l.status === 'PUBLISHED').length
-}
+const emptyCounts = (): CourseCounts => ({ sectionCount: 0, lectureCount: 0, draftLectureCount: 0, publishedCount: 0 })
 
 const toLessonDTO = (l: LessonRow): TeacherLessonDTO => ({
   id: l.id,
-  sectionId: l.sectionId,
-  chapterId: l.chapterId,
+  sectionId: l.section_id,
+  chapterId: l.chapter_id,
   title: l.title,
   kind: l.kind,
   position: l.position,
-  isPreview: l.isPreview,
+  isPreview: !!l.is_preview,
   isLocked: false,
-  estimatedMinutes: l.estimatedMinutes,
-  mediaAssetId: l.mediaStatus === 'READY' ? `asset-${l.id}` : null,
+  estimatedMinutes: l.estimated_minutes,
+  mediaAssetId: l.media_status === 'READY' ? `asset-${l.id}` : null,
   body: l.kind === 'TEXT' ? '' : null,
   resources: [],
   status: l.status,
-  mediaStatus: l.mediaStatus,
-  createdAt: seedTime,
-  updatedAt: seedTime,
+  mediaStatus: l.media_status,
+  createdAt: l.created_at,
+  updatedAt: l.updated_at,
 })
 
-export function outlineFor(courseId: string): TeacherOutlineSection[] {
-  once(courseId)
-  return sections
-    .filter((s) => s.courseId === courseId)
-    .sort((a, b) => a.position - b.position)
-    .map((s) => ({
-      id: s.id,
-      courseId: s.courseId,
-      title: s.title,
-      position: s.position,
-      createdAt: seedTime,
-      updatedAt: seedTime,
-      chapters: chapters
-        .filter((c) => c.sectionId === s.id)
-        .sort((a, b) => a.position - b.position)
-        .map((c) => ({
-          id: c.id,
-          sectionId: s.id,
-          title: c.title,
-          position: c.position,
-          createdAt: seedTime,
-          updatedAt: seedTime,
-          lessons: lessons
-            .filter((l) => l.chapterId === c.id)
-            .sort((a, b) => a.position - b.position)
-            .map(toLessonDTO),
-        })),
-    }))
+export async function outlineFor(db: Db, courseId: string): Promise<TeacherOutlineSection[]> {
+  const [sections, chapters, lessons] = await Promise.all([
+    query<SectionRow>(db, `SELECT * FROM curriculum_sections WHERE course_id = ?1 ORDER BY position, id`, courseId),
+    query<ChapterRow>(db, `SELECT * FROM curriculum_chapters WHERE course_id = ?1 ORDER BY position, id`, courseId),
+    query<LessonRow>(db, `SELECT * FROM lessons WHERE course_id = ?1 ORDER BY position, id`, courseId),
+  ])
+
+  return sections.map((section) => ({
+    id: section.id,
+    courseId: section.course_id,
+    title: section.title,
+    position: section.position,
+    createdAt: section.created_at,
+    updatedAt: section.updated_at,
+    chapters: chapters
+      .filter((chapter) => chapter.section_id === section.id)
+      .sort((a, b) => a.position - b.position)
+      .map((chapter) => ({
+        id: chapter.id,
+        sectionId: section.id,
+        title: chapter.title,
+        position: chapter.position,
+        createdAt: chapter.created_at,
+        updatedAt: chapter.updated_at,
+        lessons: lessons
+          .filter((lesson) => lesson.chapter_id === chapter.id)
+          .sort((a, b) => a.position - b.position)
+          .map(toLessonDTO),
+      })),
+  }))
+}
+
+/** Counts for many courses in two grouped queries, for the course grid and dashboard. */
+export async function courseCountsMany(db: Db, courseIds: string[]): Promise<Map<string, CourseCounts>> {
+  const counts = new Map<string, CourseCounts>()
+  if (!courseIds.length) return counts
+  const list = courseIds.map((_, i) => `?${i + 1}`).join(', ')
+
+  const [sections, lessons] = await Promise.all([
+    query<{ course_id: string; n: number }>(db, `SELECT course_id, COUNT(*) AS n FROM curriculum_sections WHERE course_id IN (${list}) GROUP BY course_id`, ...courseIds),
+    query<{ course_id: string; total: number; published: number | null; draft: number | null }>(
+      db,
+      `SELECT course_id, COUNT(*) AS total,
+              SUM(CASE WHEN status = 'PUBLISHED' THEN 1 ELSE 0 END) AS published,
+              SUM(CASE WHEN status = 'DRAFT' THEN 1 ELSE 0 END) AS draft
+       FROM lessons WHERE course_id IN (${list}) GROUP BY course_id`,
+      ...courseIds,
+    ),
+  ])
+
+  for (const id of courseIds) counts.set(id, emptyCounts())
+  for (const row of sections) {
+    const entry = counts.get(row.course_id) ?? emptyCounts()
+    entry.sectionCount = row.n
+    counts.set(row.course_id, entry)
+  }
+  for (const row of lessons) {
+    const entry = counts.get(row.course_id) ?? emptyCounts()
+    entry.lectureCount = row.total
+    entry.publishedCount = row.published ?? 0
+    entry.draftLectureCount = row.draft ?? 0
+    counts.set(row.course_id, entry)
+  }
+  return counts
+}
+
+export async function courseCounts(db: Db, courseId: string): Promise<CourseCounts> {
+  return (await courseCountsMany(db, [courseId])).get(courseId) ?? emptyCounts()
 }
 
 /* ------------------------------- mutations ------------------------------- */
 
-const resequence = <T extends { position: number }>(rows: T[]) => {
-  rows.sort((a, b) => a.position - b.position).forEach((r, i) => (r.position = i))
+async function resequence(db: Db, select: string, update: string, parentId: string) {
+  const rows = await query<{ id: string }>(db, select, parentId)
+  if (!rows.length) return
+  await db.batch(rows.map((row, index) => db.prepare(update).bind(index, row.id)))
 }
 
-export function addSection(courseId: string, title: string) {
-  once(courseId)
-  const id = `sec-${courseId}-${Date.now()}`
-  sections.push({ id, courseId, title, position: sections.filter((s) => s.courseId === courseId).length })
-  return id
-}
+const resequenceSections = (db: Db, courseId: string) =>
+  resequence(db, `SELECT id FROM curriculum_sections WHERE course_id = ?1 ORDER BY position, id`, `UPDATE curriculum_sections SET position = ?1 WHERE id = ?2`, courseId)
 
-export function deleteSection(courseId: string, sectionId: string) {
-  const section = sections.find((s) => s.id === sectionId && s.courseId === courseId)
-  if (!section) return false
-  const chapterIds = chapters.filter((c) => c.sectionId === sectionId).map((c) => c.id)
-  for (let i = lessons.length - 1; i >= 0; i--) {
-    if (lessons[i].sectionId === sectionId || (lessons[i].chapterId && chapterIds.includes(lessons[i].chapterId!))) lessons.splice(i, 1)
-  }
-  for (let i = chapters.length - 1; i >= 0; i--) if (chapters[i].sectionId === sectionId) chapters.splice(i, 1)
-  sections.splice(sections.indexOf(section), 1)
-  resequence(sections.filter((s) => s.courseId === courseId))
-  return true
-}
+const resequenceChapters = (db: Db, sectionId: string) =>
+  resequence(db, `SELECT id FROM curriculum_chapters WHERE section_id = ?1 ORDER BY position, id`, `UPDATE curriculum_chapters SET position = ?1 WHERE id = ?2`, sectionId)
 
-export function addChapter(courseId: string, sectionId: string, title: string) {
-  const section = sections.find((s) => s.id === sectionId && s.courseId === courseId)
-  if (!section) return null
-  const id = `ch-${sectionId}-${Date.now()}`
-  chapters.push({ id, sectionId, title, position: chapters.filter((c) => c.sectionId === sectionId).length })
-  return id
-}
+const resequenceLessons = (db: Db, chapterId: string) =>
+  resequence(db, `SELECT id FROM lessons WHERE chapter_id = ?1 ORDER BY position, id`, `UPDATE lessons SET position = ?1 WHERE id = ?2`, chapterId)
 
-export function deleteChapter(courseId: string, chapterId: string) {
-  const sectionIds = new Set(sections.filter((s) => s.courseId === courseId).map((s) => s.id))
-  const chapter = chapters.find((c) => c.id === chapterId && sectionIds.has(c.sectionId))
-  if (!chapter) return false
-  for (let i = lessons.length - 1; i >= 0; i--) if (lessons[i].chapterId === chapterId) lessons.splice(i, 1)
-  chapters.splice(chapters.indexOf(chapter), 1)
-  resequence(chapters.filter((c) => c.sectionId === chapter.sectionId))
-  return true
-}
-
-export function addLesson(courseId: string, chapterId: string, input: { title: string; kind: 'VIDEO' | 'TEXT'; estimatedMinutes: number }) {
-  if (!sections.some((s) => s.courseId === courseId)) return null
-  const chapter = chapters.find((c) => c.id === chapterId)
-  if (!chapter) return null
-  const id = `les-${chapterId}-${Date.now()}`
-  lessons.push({
+export async function addSection(db: Db, courseId: string, title: string): Promise<string | null> {
+  const exists = await queryOne<{ id: string }>(db, `SELECT id FROM courses WHERE id = ?1`, courseId)
+  if (!exists) return null
+  const next = await queryOne<{ position: number }>(db, `SELECT COALESCE(MAX(position), -1) + 1 AS position FROM curriculum_sections WHERE course_id = ?1`, courseId)
+  const id = newId(`sec-${courseId}`)
+  const now = nowIso()
+  await execute(
+    db,
+    `INSERT INTO curriculum_sections (id, course_id, title, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
     id,
-    sectionId: chapter.sectionId,
-    chapterId,
-    title: input.title,
-    kind: input.kind,
-    position: lessons.filter((l) => l.chapterId === chapterId).length,
-    estimatedMinutes: input.estimatedMinutes,
-    status: 'DRAFT',
-    mediaStatus: 'NONE',
-    isPreview: false,
-  })
+    courseId,
+    title,
+    next?.position ?? 0,
+    now,
+    now,
+  )
   return id
 }
 
-/** A lecture that belongs to this course, or null when it does not. */
-function ownLesson(courseId: string, lessonId: string) {
-  once(courseId)
-  const sectionIds = new Set(sections.filter((s) => s.courseId === courseId).map((s) => s.id))
-  return lessons.find((l) => l.id === lessonId && sectionIds.has(l.sectionId)) ?? null
+export async function deleteSection(db: Db, courseId: string, sectionId: string): Promise<boolean> {
+  const section = await queryOne<{ id: string }>(db, `SELECT id FROM curriculum_sections WHERE id = ?1 AND course_id = ?2`, sectionId, courseId)
+  if (!section) return false
+
+  await db.batch([
+    db.prepare(`DELETE FROM lesson_resources WHERE lesson_id IN (SELECT id FROM lessons WHERE section_id = ?1)`).bind(sectionId),
+    db.prepare(`DELETE FROM subject_lesson_lectures WHERE lecture_id IN (SELECT id FROM lessons WHERE section_id = ?1)`).bind(sectionId),
+    db.prepare(`DELETE FROM lessons WHERE section_id = ?1`).bind(sectionId),
+    db.prepare(`DELETE FROM curriculum_chapters WHERE section_id = ?1`).bind(sectionId),
+    db.prepare(`DELETE FROM curriculum_sections WHERE id = ?1`).bind(sectionId),
+  ])
+  await resequenceSections(db, courseId)
+  return true
 }
+
+export async function addChapter(db: Db, courseId: string, sectionId: string, title: string): Promise<string | null> {
+  const section = await queryOne<{ id: string }>(db, `SELECT id FROM curriculum_sections WHERE id = ?1 AND course_id = ?2`, sectionId, courseId)
+  if (!section) return null
+  const next = await queryOne<{ position: number }>(db, `SELECT COALESCE(MAX(position), -1) + 1 AS position FROM curriculum_chapters WHERE section_id = ?1`, sectionId)
+  const id = newId(`ch-${sectionId}`)
+  const now = nowIso()
+  await execute(
+    db,
+    `INSERT INTO curriculum_chapters (id, course_id, section_id, title, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    id,
+    courseId,
+    sectionId,
+    title,
+    next?.position ?? 0,
+    now,
+    now,
+  )
+  return id
+}
+
+export async function deleteChapter(db: Db, courseId: string, chapterId: string): Promise<boolean> {
+  const chapter = await queryOne<{ id: string; section_id: string }>(db, `SELECT id, section_id FROM curriculum_chapters WHERE id = ?1 AND course_id = ?2`, chapterId, courseId)
+  if (!chapter) return false
+
+  await db.batch([
+    db.prepare(`DELETE FROM lesson_resources WHERE lesson_id IN (SELECT id FROM lessons WHERE chapter_id = ?1)`).bind(chapterId),
+    db.prepare(`DELETE FROM subject_lesson_lectures WHERE lecture_id IN (SELECT id FROM lessons WHERE chapter_id = ?1)`).bind(chapterId),
+    db.prepare(`DELETE FROM lessons WHERE chapter_id = ?1`).bind(chapterId),
+    db.prepare(`DELETE FROM curriculum_chapters WHERE id = ?1`).bind(chapterId),
+  ])
+  await resequenceChapters(db, chapter.section_id)
+  return true
+}
+
+export async function addLesson(
+  db: Db,
+  courseId: string,
+  chapterId: string,
+  input: { title: string; kind: 'VIDEO' | 'TEXT'; estimatedMinutes: number },
+): Promise<string | null> {
+  const chapter = await queryOne<{ id: string; section_id: string }>(db, `SELECT id, section_id FROM curriculum_chapters WHERE id = ?1 AND course_id = ?2`, chapterId, courseId)
+  if (!chapter) return null
+
+  const next = await queryOne<{ position: number }>(db, `SELECT COALESCE(MAX(position), -1) + 1 AS position FROM lessons WHERE chapter_id = ?1`, chapterId)
+  const id = newId(`les-${chapterId}`)
+  const now = nowIso()
+  await execute(
+    db,
+    `INSERT INTO lessons (id, course_id, section_id, chapter_id, title, kind, position, estimated_minutes, status, media_status, is_preview, body, available_from, available_until, published_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', 'NONE', 0, NULL, NULL, NULL, NULL, ?, ?)`,
+    id,
+    courseId,
+    chapter.section_id,
+    chapterId,
+    input.title,
+    input.kind,
+    next?.position ?? 0,
+    input.estimatedMinutes,
+    now,
+    now,
+  )
+  return id
+}
+
+type LessonPatch = { title?: string; estimatedMinutes?: number; isPreview?: boolean; kind?: 'VIDEO' | 'TEXT' }
 
 /** Update the fields a teacher edits on one lecture. Returns false when absent. */
-export function updateLessonRow(courseId: string, lessonId: string, patch: Partial<Pick<LessonRow, 'title' | 'estimatedMinutes' | 'isPreview' | 'kind'>>) {
-  const row = ownLesson(courseId, lessonId)
-  if (!row) return false
-  Object.assign(row, patch)
-  return true
+export async function updateLessonRow(db: Db, courseId: string, lessonId: string, patch: LessonPatch): Promise<boolean> {
+  const sets: string[] = []
+  const params: unknown[] = []
+  const push = (column: string, value: unknown) => {
+    sets.push(`${column} = ?${params.length + 1}`)
+    params.push(value)
+  }
+
+  if (patch.title !== undefined) push('title', patch.title)
+  if (patch.estimatedMinutes !== undefined) push('estimated_minutes', patch.estimatedMinutes)
+  if (patch.isPreview !== undefined) push('is_preview', patch.isPreview ? 1 : 0)
+  if (patch.kind !== undefined) push('kind', patch.kind)
+  if (!sets.length) return true
+
+  push('updated_at', nowIso())
+  const changed = await execute(
+    db,
+    `UPDATE lessons SET ${sets.join(', ')} WHERE id = ?${params.length + 1} AND course_id = ?${params.length + 2}`,
+    ...params,
+    lessonId,
+    courseId,
+  )
+  return changed > 0
 }
 
 /** Publish or return a single lecture to draft. */
-export function setLessonStatus(courseId: string, lessonId: string, status: 'DRAFT' | 'PUBLISHED') {
-  const row = ownLesson(courseId, lessonId)
-  if (!row) return false
-  row.status = status
-  return true
+export async function setLessonStatus(db: Db, courseId: string, lessonId: string, status: 'DRAFT' | 'PUBLISHED'): Promise<boolean> {
+  if (status === 'PUBLISHED') {
+    const changed = await execute(
+      db,
+      `UPDATE lessons SET status = 'PUBLISHED', published_at = COALESCE(published_at, ?1), updated_at = ?1 WHERE id = ?2 AND course_id = ?3`,
+      nowIso(),
+      lessonId,
+      courseId,
+    )
+    return changed > 0
+  }
+  const changed = await execute(
+    db,
+    `UPDATE lessons SET status = 'DRAFT', published_at = NULL, updated_at = ?1 WHERE id = ?2 AND course_id = ?3`,
+    nowIso(),
+    lessonId,
+    courseId,
+  )
+  return changed > 0
 }
 
-export function deleteLesson(courseId: string, lessonId: string) {
-  const sectionIds = new Set(sections.filter((s) => s.courseId === courseId).map((s) => s.id))
-  const index = lessons.findIndex((l) => l.id === lessonId && sectionIds.has(l.sectionId))
-  if (index < 0) return false
-  const [row] = lessons.splice(index, 1)
-  if (row.chapterId) resequence(lessons.filter((l) => l.chapterId === row.chapterId))
+export async function deleteLesson(db: Db, courseId: string, lessonId: string): Promise<boolean> {
+  const row = await queryOne<{ id: string; chapter_id: string | null }>(db, `SELECT id, chapter_id FROM lessons WHERE id = ?1 AND course_id = ?2`, lessonId, courseId)
+  if (!row) return false
+
+  await db.batch([
+    db.prepare(`DELETE FROM lesson_resources WHERE lesson_id = ?1`).bind(lessonId),
+    db.prepare(`DELETE FROM subject_lesson_lectures WHERE lecture_id = ?1`).bind(lessonId),
+    db.prepare(`DELETE FROM lessons WHERE id = ?1`).bind(lessonId),
+  ])
+  if (row.chapter_id) await resequenceLessons(db, row.chapter_id)
   return true
 }
 
 /** Swap a row with its neighbour inside its parent. Returns false at the ends. */
-export function move(courseId: string, kind: 'SECTION' | 'CHAPTER' | 'LESSON', id: string, direction: 'UP' | 'DOWN') {
-  if (!sections.some((s) => s.courseId === courseId)) return false
+export async function move(db: Db, courseId: string, kind: 'SECTION' | 'CHAPTER' | 'LESSON', id: string, direction: 'UP' | 'DOWN'): Promise<boolean> {
   const delta = direction === 'UP' ? -1 : 1
+  const swap = async (table: string, rows: Array<{ id: string; position: number }>, index: number) => {
+    const other = rows[index + delta]
+    if (!other) return false
+    await db.batch([
+      db.prepare(`UPDATE ${table} SET position = ?1 WHERE id = ?2`).bind(other.position, rows[index].id),
+      db.prepare(`UPDATE ${table} SET position = ?1 WHERE id = ?2`).bind(rows[index].position, other.id),
+    ])
+    return true
+  }
 
   if (kind === 'SECTION') {
-    const siblings = sections.filter((s) => s.courseId === courseId).sort((a, b) => a.position - b.position)
-    const i = siblings.findIndex((s) => s.id === id)
-    const j = i + delta
-    if (i < 0 || j < 0 || j >= siblings.length) return false
-    ;[siblings[i].position, siblings[j].position] = [siblings[j].position, siblings[i].position]
-    return true
+    const rows = await query<{ id: string; position: number }>(db, `SELECT id, position FROM curriculum_sections WHERE course_id = ?1 ORDER BY position, id`, courseId)
+    const index = rows.findIndex((row) => row.id === id)
+    if (index < 0) return false
+    return swap('curriculum_sections', rows, index)
   }
 
   if (kind === 'CHAPTER') {
-    const sectionIds = new Set(sections.filter((s) => s.courseId === courseId).map((s) => s.id))
-    const chapter = chapters.find((c) => c.id === id && sectionIds.has(c.sectionId))
+    const chapter = await queryOne<{ id: string; section_id: string }>(db, `SELECT id, section_id FROM curriculum_chapters WHERE id = ?1 AND course_id = ?2`, id, courseId)
     if (!chapter) return false
-    const siblings = chapters.filter((c) => c.sectionId === chapter.sectionId).sort((a, b) => a.position - b.position)
-    const i = siblings.findIndex((c) => c.id === id)
-    const j = i + delta
-    if (j < 0 || j >= siblings.length) return false
-    ;[siblings[i].position, siblings[j].position] = [siblings[j].position, siblings[i].position]
-    return true
+    const rows = await query<{ id: string; position: number }>(db, `SELECT id, position FROM curriculum_chapters WHERE section_id = ?1 ORDER BY position, id`, chapter.section_id)
+    const index = rows.findIndex((row) => row.id === id)
+    if (index < 0) return false
+    return swap('curriculum_chapters', rows, index)
   }
 
-  const sectionIds = new Set(sections.filter((s) => s.courseId === courseId).map((s) => s.id))
-  const lesson = lessons.find((l) => l.id === id && sectionIds.has(l.sectionId))
-  if (!lesson) return false
-  const siblings = lessons.filter((l) => l.chapterId === lesson.chapterId && l.sectionId === lesson.sectionId).sort((a, b) => a.position - b.position)
-  const i = siblings.findIndex((l) => l.id === id)
-  const j = i + delta
-  if (j < 0 || j >= siblings.length) return false
-  ;[siblings[i].position, siblings[j].position] = [siblings[j].position, siblings[i].position]
-  return true
+  const lesson = await queryOne<{ id: string; chapter_id: string | null }>(db, `SELECT id, chapter_id FROM lessons WHERE id = ?1 AND course_id = ?2`, id, courseId)
+  if (!lesson?.chapter_id) return false
+  const rows = await query<{ id: string; position: number }>(db, `SELECT id, position FROM lessons WHERE chapter_id = ?1 ORDER BY position, id`, lesson.chapter_id)
+  const index = rows.findIndex((row) => row.id === id)
+  if (index < 0) return false
+  return swap('lessons', rows, index)
 }
 
 /* --------------------------- publish checklist --------------------------- */
 
-export function publishValidation(
+export async function publishValidation(
+  db: Db,
   course: { title: string; summary: string; instructor: unknown; thumbnailUrl: string | null },
   courseId: string,
-): PublishValidationDTO {
-  const outline = outlineFor(courseId)
-  const sectionIds = new Set(outline.map((s) => s.id))
-  const rows = lessons.filter((l) => sectionIds.has(l.sectionId))
-  const publishedRows = rows.filter((l) => l.status === 'PUBLISHED')
-  const mediaReady = publishedRows.every((l) => l.mediaStatus === 'READY')
+): Promise<PublishValidationDTO> {
+  const [outline, rows] = await Promise.all([
+    outlineFor(db, courseId),
+    query<{ status: string; media_status: string }>(db, `SELECT status, media_status FROM lessons WHERE course_id = ?1`, courseId),
+  ])
+  const publishedRows = rows.filter((row) => row.status === 'PUBLISHED')
+  const mediaReady = publishedRows.every((row) => row.media_status === 'READY')
 
   const requirements: PublishRequirementDTO[] = [
     { key: 'title', label: 'Course title', satisfied: course.title.trim().length > 2 },
