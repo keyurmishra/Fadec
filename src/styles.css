@@ -1,0 +1,178 @@
+@import 'tailwindcss';
+
+/*
+  FADEC design tokens.
+
+  An editorial technical-academy system: warm off-white paper, slate panels,
+  deep navy ink, hairlines instead of shadows, and exactly one accent —
+  aviation amber. There are no gradients and no glass in this system.
+
+  Legacy token names from the template's dark theme (`violet`, `lime`, `blue`)
+  are kept as aliases so older screens keep a coherent palette: `violet` and
+  `blue` now resolve to navy structure, `lime` to the single status green used
+  for live/complete indicators. Amber is the only decorative accent.
+*/
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-display: 'Newsreader', 'Iowan Old Style', Georgia, 'Times New Roman', serif;
+  /* Kept for older screens: labels are sans, uppercase and letter-spaced. */
+  --font-hand: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  /* Paper and slate */
+  --color-bg: #f6f3ec;
+  --color-surface: #fdfbf7;
+  --color-surface-2: #eee9df;
+  --color-raised: #e4ded2;
+  --color-line: rgb(15 33 55 / 0.14);
+  --color-line-strong: rgb(15 33 55 / 0.28);
+  --color-fg: #0f2137;
+  --color-muted: #515c6b;
+  --color-faint: #6d7684;
+
+  /* The one accent */
+  --color-amber: #b0761c;
+  --color-amber-deep: #8f5a12;
+  --color-amber-ink: #7d4f0d;
+  --color-amber-soft: rgb(176 118 28 / 0.12);
+
+  /* Navy structure (legacy `violet` / `blue` names) */
+  --color-navy: #0f2137;
+  --color-navy-ink: #1d3f63;
+  --color-navy-soft: rgb(15 33 55 / 0.06);
+  --color-violet: #1d3f63;
+  --color-violet-deep: #0f2137;
+  --color-violet-ink: #1d3f63;
+  --color-violet-soft: rgb(15 33 55 / 0.06);
+  --color-blue: #1d3f63;
+  --color-blue-ink: #1d3f63;
+  --color-blue-soft: rgb(29 63 99 / 0.07);
+
+  /* Status only */
+  --color-lime: #2f6b4f;
+  --color-lime-ink: #2a6047;
+  --color-lime-soft: rgb(47 107 79 / 0.1);
+  --color-danger: #a03024;
+  --color-danger-soft: rgb(160 48 36 / 0.09);
+
+  /* Crisp corners: a 2px plate, a 3px control, pills only for dots. */
+  --radius-control: 3px;
+  --radius-pill: 999px;
+  --radius-card: 2px;
+  --radius-card-sm: 2px;
+  --radius-window: 2px;
+
+  --shadow-lift: 0 18px 40px -28px rgb(15 33 55 / 0.45);
+  --shadow-pill: 0 10px 30px -22px rgb(15 33 55 / 0.5);
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --animate-draw: draw 1.4s var(--ease-out-soft) 0.5s both;
+  --animate-rise: rise 0.7s var(--ease-out-soft) both;
+  --animate-pulse-dot: pulse-dot 2s ease-in-out infinite;
+  --animate-shimmer: shimmer 1.4s linear infinite;
+
+  @keyframes draw {
+    from { stroke-dashoffset: var(--len, 600); }
+    to { stroke-dashoffset: 0; }
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  @keyframes shimmer {
+    from { background-position: -200% 0; }
+    to { background-position: 200% 0; }
+  }
+}
+
+@layer base {
+  html {
+    background-color: var(--color-bg);
+    color-scheme: light;
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    letter-spacing: -0.005em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: clip;
+  }
+  ::selection {
+    background: var(--color-amber-soft);
+    color: var(--color-fg);
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+  }
+  select option {
+    background: var(--color-surface);
+    color: var(--color-fg);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-amber-deep);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* A hairline edge, the editorial substitute for a drop shadow. */
+@utility depth {
+  box-shadow:
+    inset 0 0 0 1px var(--depth-edge, rgb(15 33 55 / 0.1)),
+    inset 0 1px 0 rgb(255 255 255 / 0.7);
+}
+
+@utility text-balance {
+  text-wrap: balance;
+}
+@utility text-pretty {
+  text-wrap: pretty;
+}
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+@utility skeleton {
+  background: linear-gradient(90deg, var(--color-surface-2) 25%, var(--color-raised) 50%, var(--color-surface-2) 75%);
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+}
+
+/* Editorial eyebrow: small, uppercase, tracked. */
+@utility eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+/* Tabular figures for money, times and metrics. */
+@utility figures {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
