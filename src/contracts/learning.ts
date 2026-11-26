@@ -11,6 +11,7 @@
   - Progress is a per-lesson row plus an aggregate view; the client pings and
     the server decides whether the jump was plausible.
 */
+import type { LatePolicy } from './assessment'
 import type { AuditStamp, Id, IsoDateTime } from './common'
 
 /** Payment is not a source yet; it is the reserved fourth value. */
@@ -76,6 +77,33 @@ export type StudentSessionDTO = StudentIdentityDTO & {
   /** Seeded accounts and a demo credential until real auth lands. */
   demo: boolean
   expiresAt: IsoDateTime
+}
+
+/**
+ * A published assignment as its students see it. There is no DRAFT value: an
+ * unpublished assignment is not part of any student payload, and the window is
+ * resolved on the server so every screen agrees about what is open.
+ */
+export type StudentAssignmentStatus = 'SCHEDULED' | 'OPEN' | 'CLOSED'
+
+export type StudentAssignmentSummaryDTO = {
+  id: Id
+  courseId: Id
+  courseTitle: string
+  title: string
+  status: StudentAssignmentStatus
+  opensAt: IsoDateTime
+  dueAt: IsoDateTime
+  latePolicy: LatePolicy
+  attemptsAllowed: number
+  maxScore: number
+  /** Whether the brief expects a file. Uploads are not part of the portal yet. */
+  allowFileUpload: boolean
+  publishedAt: IsoDateTime
+}
+
+export type StudentAssignmentDetailDTO = StudentAssignmentSummaryDTO & {
+  instructions: string
 }
 
 /** Client → server progress ping. The server may reject impossible jumps. */

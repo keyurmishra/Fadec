@@ -19,6 +19,7 @@ import {
   type AssignmentPatch,
 } from '../teacher/assignments'
 import { ensureDatabase } from '../teacher/db'
+import { assignmentsForStudent, studentAssignment } from '../teacher/student-assignments'
 import { addChapter, addLesson, addSection, deleteChapter, deleteLesson, deleteSection, move, outlineFor, publishValidation } from '../teacher/curriculum'
 import { courseForTeacher, coursesForTeacher, setCourseStatus } from '../teacher/courses'
 import { dashboardForTeacher, TEACHERS } from '../teacher/fixtures'
@@ -1095,6 +1096,27 @@ app.get('/api/student/me', async (c) => {
   if (!student) return noStudentSession()
   c.header('cache-control', 'no-store')
   return c.json(student)
+})
+
+/*
+  The student's own assignments, and one of them. The enrolment join is inside
+  the query, so an assignment on a course the student is not enrolled in is
+  indistinguishable from one that does not exist: both are 404, never 403.
+*/
+app.get('/api/student/assignments', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  c.header('cache-control', 'no-store')
+  return c.json({ items: await assignmentsForStudent(c.env.DB, student.id) })
+})
+
+app.get('/api/student/assignments/:assignmentId', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  const assignment = await studentAssignment(c.env.DB, student.id, c.req.param('assignmentId'))
+  if (!assignment) return c.json({ error: 'That assignment could not be found.' }, 404)
+  c.header('cache-control', 'no-store')
+  return c.json(assignment)
 })
 
 /* -------------------------- student catalogue --------------------------- */

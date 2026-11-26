@@ -15,6 +15,10 @@ import { ProgrammeDetail } from './pages/ProgrammeDetail'
 import { Programmes } from './pages/Programmes'
 import { Styleguide } from './pages/Styleguide'
 import { SubjectDetail as StudentSubjectDetail, Subjects as StudentSubjects } from './pages/Subjects'
+import { RequireStudent, StudentShell } from './learn/components/StudentShell'
+import { StudentAssignmentDetail } from './learn/pages/AssignmentDetail'
+import { StudentAssignments } from './learn/pages/Assignments'
+import { StudentSignIn } from './learn/pages/SignIn'
 import { RequireTeacher, TeacherShell } from './teacher/components/TeacherShell'
 import { TeacherAssignmentDetail } from './teacher/pages/AssignmentDetail'
 import { TeacherAssignments } from './teacher/pages/Assignments'
@@ -53,7 +57,10 @@ function ScrollManager() {
 */
 function AppRoutes() {
   const { pathname } = useLocation()
-  const isStudio = pathname === '/teach' || pathname.startsWith('/teach/')
+  // Both signed-in workspaces carry their own chrome, so the marketing footer
+  // stays out of them.
+  const isStudio =
+    pathname === '/teach' || pathname.startsWith('/teach/') || pathname === '/learn' || pathname.startsWith('/learn/')
 
   return (
     <>
@@ -69,6 +76,20 @@ function AppRoutes() {
           <Route path="subjects/:subjectId" element={<StudentSubjectDetail />} />
           <Route path="events" element={<Events />} />
           <Route path="styleguide" element={<Styleguide />} />
+
+          <Route path="learn/signin" element={<StudentSignIn />} />
+          <Route
+            path="learn"
+            element={
+              <RequireStudent>
+                <StudentShell />
+              </RequireStudent>
+            }
+          >
+            <Route index element={<Navigate to="/learn/assignments" replace />} />
+            <Route path="assignments" element={<StudentAssignments />} />
+            <Route path="assignments/:assignmentId" element={<StudentAssignmentDetail />} />
+          </Route>
 
           <Route path="teach/signin" element={<TeacherSignIn />} />
           <Route
