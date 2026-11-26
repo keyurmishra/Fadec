@@ -58,6 +58,26 @@ export type CourseProgressDTO = {
   lastActivityAt: IsoDateTime | null
 }
 
+/**
+ * Who the student portal is signed in as. `id` is the internal key the enrolment
+ * and submission tables use and never appears in a URL; `studentNo` is the
+ * number the student types at sign-in.
+ */
+export type StudentIdentityDTO = {
+  id: Id
+  studentNo: string
+  name: string
+  email: string
+  cohort: string
+}
+
+/** Returned by `POST /api/student/signin`, behind a signed session cookie. */
+export type StudentSessionDTO = StudentIdentityDTO & {
+  /** Seeded accounts and a demo credential until real auth lands. */
+  demo: boolean
+  expiresAt: IsoDateTime
+}
+
 /** Client → server progress ping. The server may reject impossible jumps. */
 export type ProgressPingDTO = {
   enrollmentId: Id

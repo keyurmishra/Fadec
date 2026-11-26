@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS teachers (
 
 CREATE TABLE IF NOT EXISTS students (
   id TEXT PRIMARY KEY,
+  /* Added after the table shipped, so databases seeded earlier get it from MIGRATIONS. */
+  student_no TEXT,
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   cohort TEXT NOT NULL,
@@ -237,6 +239,18 @@ const SCHEMA_STATEMENTS = SCHEMA.split(';')
   .map((statement) => statement.trim())
   .filter(Boolean)
 
+/*
+  Changes to tables that already exist. SQLite has no ADD COLUMN IF NOT EXISTS,
+  so each is attempted once and the duplicate-column error is the only one
+  ignored. Adding the unique index here rather than in SCHEMA keeps a database
+  seeded before student numbers existed working: several NULLs are allowed, and
+  the seed fills them in straight afterwards.
+*/
+const MIGRATIONS = [
+  `ALTER TABLE students ADD COLUMN student_no TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS students_by_number ON students(student_no)`,
+]
+
 let ready: Promise<void> | null = null
 
 /**
@@ -247,6 +261,13 @@ export function ensureDatabase(db: D1Database): Promise<void> {
   if (!ready) {
     ready = (async () => {
       await db.batch(SCHEMA_STATEMENTS.map((statement) => db.prepare(statement)))
+      for (const statement of MIGRATIONS) {
+        try {
+          await db.prepare(statement).run()
+        } catch (error) {
+          if (!String(error).includes('duplicate column')) throw error
+        }
+      }
       await seedDatabase(db)
     })().catch((error: unknown) => {
       ready = null

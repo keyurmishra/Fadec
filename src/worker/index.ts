@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 
 import type { LatePolicy } from '../contracts/assessment'
+import type { StudentIdentityDTO } from '../contracts/learning'
 import { EVENTS, PROGRAMMES } from '../content'
 import { validateApplication, validateEmailOnly, validateRsvp, validateSignIn, validateTeacherSignIn, type FieldErrors } from '../shared/validation'
 import {
@@ -50,6 +51,8 @@ import {
   updateTopic,
   type SubjectPatch,
 } from '../teacher/subjects'
+import { studentById, studentForSignIn } from '../teacher/students'
+import { clearedStudentCookie, createStudentSession, studentCookie, STUDENT_COOKIE, verifyStudentSession } from './student-session'
 
 // The Worker in front of the static site. Every form posts here and each route
 // validates its input with the same rules the browser uses. Applications,
@@ -58,6 +61,8 @@ import {
 type Env = {
   ASSETS: Fetcher
   DB: D1Database
+  /** HMAC key for the student session cookie. Read from .dev.vars locally, from a Worker secret in production. */
+  STUDENT_SESSION_SECRET?: string
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -164,6 +169,27 @@ const teacherFrom = (c: { req: { header: (name: string) => string | undefined } 
 
 const noSession = () => Response.json({ error: 'Sign in to the teaching studio to continue.' }, { status: 401 })
 const notYours = () => Response.json({ error: 'That course could not be found.' }, { status: 404 })
+
+/*
+  The student portal's session. Unlike the demo teacher cookie the value is
+  signed, so a tampered id, an expired session and a cookie naming an account
+  that no longer exists all fail here and answer 401 instead of being trusted.
+  `Secure` is added only on https so loopback development still works.
+*/
+const secureRequest = (c: { req: { url: string } }) => new URL(c.req.url).protocol === 'https:'
+
+type StudentRequest = { env: Env; req: { header: (name: string) => string | undefined; url: string } }
+
+async function studentFrom(c: StudentRequest): Promise<StudentIdentityDTO | null> {
+  const secret = c.env.STUDENT_SESSION_SECRET
+  const value = cookieValue(c.req.header('cookie') ?? null, STUDENT_COOKIE)
+  if (!secret || !value) return null
+  const session = await verifyStudentSession(secret, value)
+  if (!session) return null
+  return studentById(c.env.DB, session.studentId)
+}
+
+const noStudentSession = () => Response.json({ error: 'Sign in to the student portal to continue.' }, { status: 401 })
 
 app.post('/api/teacher/signin', async (c) => {
   const body = await readBody(c.req.raw)
@@ -1028,6 +1054,47 @@ app.post('/api/teacher/submissions/:submissionId/withdraw', async (c) => {
   const updated = await withdrawGrade(db, teacher.teacherId, submissionId, reason)
   if (!updated) return submissionNotFound()
   return c.json(updated)
+})
+
+/* ---------------------------- student portal ---------------------------- */
+
+/*
+  Identity only, for now: signing in and out, and who the caller is. Every later
+  student route takes its account from this session, so a student id never comes
+  from the client. Unauthenticated calls answer 401 like the studio; a resource
+  outside the student's own enrolments will answer 404 rather than 403, which is
+  the ownership rule the studio uses too.
+*/
+app.post('/api/student/signin', async (c) => {
+  const secret = c.env.STUDENT_SESSION_SECRET
+  if (!secret) return c.json({ error: 'Student sessions are not configured on this deployment.' }, 503)
+
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+  const errors = validateSignIn(body)
+  if (Object.keys(errors).length) return invalid(errors)
+
+  const student = await studentForSignIn(c.env.DB, String(body.email).trim().toLowerCase(), String(body.studentId).trim().toUpperCase())
+  // One message for both a wrong email and a wrong number: never confirm which failed.
+  if (!student) return c.json({ error: 'Those details do not match a student account.' }, 401)
+
+  const { value, expiresAt } = await createStudentSession(secret, student.id)
+  c.header('cache-control', 'no-store')
+  c.header('set-cookie', studentCookie(value, secureRequest(c)))
+  return c.json({ ...student, demo: true, expiresAt: new Date(expiresAt).toISOString() })
+})
+
+app.post('/api/student/signout', (c) => {
+  c.header('cache-control', 'no-store')
+  c.header('set-cookie', clearedStudentCookie(secureRequest(c)))
+  return c.json({ ok: true })
+})
+
+app.get('/api/student/me', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  c.header('cache-control', 'no-store')
+  return c.json(student)
 })
 
 /* -------------------------- student catalogue --------------------------- */
