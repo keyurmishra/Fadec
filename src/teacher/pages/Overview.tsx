@@ -71,7 +71,7 @@ export function TeacherOverview() {
           <h1 className="font-display text-[34px] leading-[1.05] tracking-[-0.015em] md:text-[44px]">{firstName}</h1>
           <p className="max-w-[62ch] text-[14.5px] leading-relaxed text-muted">
             {state.status === 'ready'
-              ? `${state.data.kpis.pendingEvaluations} submissions await marking across ${state.data.kpis.assignedCourses} courses, with ${state.data.upcomingClasses.length} classes scheduled.`
+              ? `${state.data.kpis.pendingEvaluations} submissions await marking across ${state.data.kpis.assignedCourses} courses.`
               : 'Loading your teaching week.'}
           </p>
         </div>
@@ -136,7 +136,13 @@ function Ready({ data }: { data: TeacherDashboardDTO }) {
     <>
       <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KpiCard label="Assigned courses" value={kpis.assignedCourses} sub={`${quickCounts.draftsAwaitingPublish} lectures in draft`} to="/teach/courses" />
-        <KpiCard label="Enrolled students" value={kpis.enrolledStudents} sub={`${quickCounts.atRiskStudents} falling behind`} to="/teach/students?atRisk=1" tone="lime" />
+        <KpiCard
+          label="Enrolled students"
+          value={kpis.enrolledStudents}
+          sub={quickCounts.atRiskStudents === null ? 'At-risk tracking not available yet' : `${quickCounts.atRiskStudents} falling behind`}
+          to="/teach/courses"
+          tone="lime"
+        />
         <KpiCard label="Published lectures" value={kpis.publishedLectures} sub="Across published courses" to="/teach/lectures" />
         <KpiCard label="Pending evaluations" value={kpis.pendingEvaluations} sub={`${quickCounts.lateSubmissions} submitted late`} to="/teach/submissions?status=PENDING" tone="amber" />
       </dl>
@@ -182,7 +188,16 @@ function Ready({ data }: { data: TeacherDashboardDTO }) {
                 ))}
               </ul>
             ) : (
-              <EmptyState title="No classes scheduled" body="Schedule a live session and it will appear here." className="border-0" action={<Button to="/teach/live" size="sm">Schedule a class</Button>} />
+              <EmptyState
+                title="Live classes are not built yet"
+                body="Scheduling, the class calendar and attendance arrive in Phase 5. Nothing is listed here until a real session exists."
+                className="border-0"
+                action={
+                  <Button to="/teach/live" size="sm" variant="secondary">
+                    What is planned
+                  </Button>
+                }
+              />
             )}
           </Panel>
 
@@ -242,7 +257,8 @@ function Ready({ data }: { data: TeacherDashboardDTO }) {
             )}
           </Panel>
 
-          <Panel title="Recent activity" description="Across your courses">
+          <Panel title="Recent activity" description="Hand-ins, quiz submissions and enrolments on your courses">
+            {data.activity.length ? (
             <ul className="flex flex-col divide-y divide-line">
               {data.activity.map((a) => (
                 <li key={a.id}>
@@ -258,6 +274,9 @@ function Ready({ data }: { data: TeacherDashboardDTO }) {
                 </li>
               ))}
             </ul>
+            ) : (
+              <EmptyState title="No activity yet" body="Hand-ins, quiz submissions and new enrolments on your courses appear here as they happen." className="border-0" />
+            )}
           </Panel>
         </div>
       </div>

@@ -23,7 +23,8 @@ import { apiError, apiNotFound, badJson, implausiblePath, invalid, serverError, 
 import { assignmentsForStudent, MAX_ANSWER_LENGTH, saveAttempt, startAttempt, studentAssignment, submitAttempt } from '../teacher/student-assignments'
 import { addChapter, addLesson, addSection, deleteChapter, deleteLesson, deleteSection, move, outlineFor, publishValidation } from '../teacher/curriculum'
 import { courseForTeacher, coursesForTeacher, setCourseStatus } from '../teacher/courses'
-import { dashboardForTeacher, TEACHERS } from '../teacher/fixtures'
+import { dashboardForTeacher } from '../teacher/dashboard'
+import { TEACHERS } from '../teacher/fixtures'
 import {
   addLectureResource,
   applyLecturePatch,

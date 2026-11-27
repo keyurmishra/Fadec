@@ -46,8 +46,11 @@ export type TeacherCourseSummaryDTO = {
   lectureCount: number
   assignmentCount: number
   enrolledCount: number
-  /** 0–100, mean completion across active enrolments. */
-  completionPercent: number
+  /**
+   * 0–100, mean completion across active enrolments. Null while learner
+   * progress is not recorded (no progress table exists yet).
+   */
+  completionPercent: number | null
   /** Lectures saved but not published; the overview surfaces this as work. */
   draftLectureCount: number
   price: MoneyDTO | null
@@ -120,8 +123,11 @@ export type TeacherLectureSummaryDTO = {
   mediaStatus: 'READY' | 'PROCESSING' | 'NONE'
   isPreview: boolean
   resourceCount: number
-  /** 0–100, watch completion; 0 while the lecture is not live. */
-  watchCompletionPercent: number
+  /**
+   * 0–100, watch completion. Null while viewing is not recorded: the portal has
+   * no lecture playback yet, so there is nothing to measure.
+   */
+  watchCompletionPercent: number | null
   availabilityStatus: LectureAvailabilityStatus
   updatedAt: IsoDateTime
 }
@@ -140,7 +146,8 @@ export type TeacherLectureDetailDTO = TeacherLectureSummaryDTO & {
   body: string | null
   resources: LectureResourceDTO[]
   availability: LectureAvailabilityDTO
-  watch: LectureWatchStatsDTO
+  /** Null while viewing is not recorded; the shape is kept for when it is. */
+  watch: LectureWatchStatsDTO | null
   courseStatus: CourseStatus
   /** Null until a video has been processed to READY. */
   media: { assetId: Id; durationSeconds: number | null } | null
@@ -279,8 +286,10 @@ export type TeacherDashboardDTO = {
   quickCounts: {
     draftsAwaitingPublish: number
     lateSubmissions: number
-    atRiskStudents: number
+    /** Null until there is a real basis for it (progress, attendance and quiz history). */
+    atRiskStudents: number | null
   }
+  /** Live classes are not built yet; always empty until they are. */
   upcomingClasses: LiveClassDTO[]
   upcomingDeadlines: TeacherDeadlineDTO[]
   recentSubmissions: TeacherRecentSubmissionDTO[]

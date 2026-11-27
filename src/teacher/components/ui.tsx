@@ -59,6 +59,18 @@ export function Panel({ title, description, action, children, className }: { tit
   )
 }
 
+/**
+ * Stands in for a metric the platform does not record yet. A number would look
+ * measured; this says plainly that there is nothing to measure.
+ */
+export function NotTracked({ label = 'Not tracked yet', reason }: { label?: string; reason?: string }) {
+  return (
+    <span className="text-[12px] text-faint" title={reason}>
+      {label}
+    </span>
+  )
+}
+
 export function ProgressBar({ value, tone = 'bg-navy', label }: { value: number; tone?: string; label?: string }) {
   const clamped = Math.max(0, Math.min(100, value))
   return (

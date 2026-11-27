@@ -432,7 +432,8 @@ export async function assessmentDigest(db: Db, teacherId: string): Promise<Asses
       db,
       `SELECT a.id, a.title, a.course_id, c.title AS course_title, a.due_at,
               (SELECT COUNT(*) FROM course_enrolments e WHERE e.course_id = c.id AND e.status = 'ACTIVE') AS enrolled_count,
-              (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id) AS submitted
+              /* Students who have handed in, not rows: an open draft is not a hand-in, and a resit is the same student. */
+              (SELECT COUNT(DISTINCT s.student_user_id) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.status = 'SUBMITTED') AS submitted
        FROM assignments a JOIN courses c ON c.id = a.course_id
        WHERE c.instructor_id = ?1 AND a.published_at IS NOT NULL AND a.status = 'OPEN' AND a.due_at >= ?2
        ORDER BY a.due_at LIMIT 3`,
