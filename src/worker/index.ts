@@ -53,6 +53,26 @@ import {
   type SubjectPatch,
 } from '../teacher/subjects'
 import { studentById, studentForSignIn } from '../teacher/students'
+import {
+  addQuestion,
+  attemptDetail as quizAttemptDetail,
+  createQuiz,
+  deleteQuestion,
+  markAnswer,
+  moveQuestion,
+  normaliseQuestion,
+  quizDetail,
+  quizzesForTeacher,
+  RELEASE_POLICIES,
+  replaceQuestion,
+  setQuizClosed,
+  setQuizPublished,
+  updateQuiz,
+  type QuestionResult,
+  type QuizPatch,
+} from '../teacher/quizzes'
+import { quizzesForStudent, saveQuizAnswer, startQuizAttempt, studentAttempt, studentQuiz, submitQuizAttempt } from '../teacher/student-quizzes'
+import type { QuizReleasePolicy } from '../contracts/quizzes'
 import { clearedStudentCookie, createStudentSession, studentCookie, STUDENT_COOKIE, verifyStudentSession } from './student-session'
 
 // The Worker in front of the static site. Every form posts here and each route
@@ -1057,6 +1077,244 @@ app.post('/api/teacher/submissions/:submissionId/withdraw', async (c) => {
   return c.json(updated)
 })
 
+/* -------------------------------- quizzes -------------------------------- */
+
+const quizNotFound = () => Response.json({ error: 'That quiz is not in one of your courses.' }, { status: 404 })
+const questionNotFound = () => Response.json({ error: 'That question is not in one of your quizzes.' }, { status: 404 })
+const quizAttemptNotFound = () => Response.json({ error: 'That attempt is not in one of your quizzes.' }, { status: 404 })
+const quizLocked = () => Response.json({ error: 'Questions are fixed once a quiz is published. Unpublish it to edit them.' }, { status: 409 })
+
+const releasePolicyFrom = (value: unknown): QuizReleasePolicy | null => RELEASE_POLICIES.find((p) => p === value) ?? null
+
+/** The answer every question mutation gives: the whole quiz, or the reason it was refused. */
+function questionResponse(result: QuestionResult, created = false) {
+  if (result.status === 'NOT_FOUND') return questionNotFound()
+  if (result.status === 'LOCKED') return quizLocked()
+  if (result.status === 'NO_MOVE') return Response.json({ error: 'That question cannot move any further.' }, { status: 409 })
+  return Response.json(result.quiz, { status: created ? 201 : 200 })
+}
+
+/** The settings both create and edit accept. Missing fields are left out of the patch. */
+function quizFieldsFrom(body: Record<string, unknown>): { ok: true; patch: QuizPatch } | { ok: false; errors: FieldErrors } {
+  const patch: QuizPatch = {}
+  if (body.title !== undefined) {
+    const title = titleFrom(body)
+    if (!title) return { ok: false, errors: { title: 'Give the quiz a title of 2–120 characters.' } }
+    patch.title = title
+  }
+  if (body.instructions !== undefined) {
+    const instructions = textFrom(body.instructions, 5000)
+    if (!instructions.ok) return { ok: false, errors: { instructions: 'Instructions must be plain text under 5,000 characters.' } }
+    patch.instructions = instructions.value ?? ''
+  }
+  for (const field of ['opensAt', 'closesAt'] as const) {
+    if (body[field] === undefined) continue
+    const parsed = parseIso(body[field])
+    if (!parsed.ok || !parsed.value) return { ok: false, errors: { [field]: 'Enter a valid date and time.' } }
+    patch[field] = parsed.value
+  }
+  if (body.durationMinutes !== undefined) {
+    const minutes = wholeNumber(body.durationMinutes, 1, 600)
+    if (minutes === null) return { ok: false, errors: { durationMinutes: 'Set a time limit between 1 and 600 minutes.' } }
+    patch.durationMinutes = minutes
+  }
+  if (body.attemptsAllowed !== undefined) {
+    const attempts = wholeNumber(body.attemptsAllowed, 1, 10)
+    if (attempts === null) return { ok: false, errors: { attemptsAllowed: 'Allow between 1 and 10 attempts.' } }
+    patch.attemptsAllowed = attempts
+  }
+  if (body.passPercent !== undefined) {
+    const pass = wholeNumber(body.passPercent, 0, 100)
+    if (pass === null) return { ok: false, errors: { passPercent: 'Set a pass mark from 0 to 100%.' } }
+    patch.passPercent = pass
+  }
+  if (body.releasePolicy !== undefined) {
+    const policy = releasePolicyFrom(body.releasePolicy)
+    if (!policy) return { ok: false, errors: { releasePolicy: 'Choose when students see their results.' } }
+    patch.releasePolicy = policy
+  }
+  if (body.shuffleQuestions !== undefined) {
+    if (typeof body.shuffleQuestions !== 'boolean') return { ok: false, errors: { shuffleQuestions: 'Choose whether to shuffle the questions.' } }
+    patch.shuffleQuestions = body.shuffleQuestions
+  }
+  return { ok: true, patch }
+}
+
+/** Every quiz in this teacher's courses, plus the course picker. */
+app.get('/api/teacher/quizzes', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const [items, courses] = await Promise.all([quizzesForTeacher(c.env.DB, teacher.teacherId), coursesForTeacher(c.env.DB, teacher.teacherId)])
+  return c.json({ items, courses: courses.map((course) => ({ id: course.id, title: course.title })), totalCount: items.length })
+})
+
+app.post('/api/teacher/quizzes', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const db = c.env.DB
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const courseId = typeof body.courseId === 'string' ? body.courseId : ''
+  if (!courseId) return invalid({ courseId: 'Choose the course this quiz belongs to.' })
+  if (!(await courseForTeacher(db, teacher.teacherId, courseId))) return notYours()
+  if (body.title === undefined) return invalid({ title: 'Give the quiz a title of 2–120 characters.' })
+  if (body.closesAt === undefined || body.closesAt === null || body.closesAt === '') return invalid({ closesAt: 'Enter a valid closing date and time.' })
+
+  const fields = quizFieldsFrom({ ...body, opensAt: body.opensAt || new Date().toISOString() })
+  if (!fields.ok) return invalid(fields.errors)
+  const p = fields.patch
+  if (Date.parse(p.closesAt!) <= Date.parse(p.opensAt!)) return invalid({ closesAt: 'The quiz must close after it opens.' })
+
+  const quiz = await createQuiz(db, teacher.teacherId, {
+    courseId,
+    title: p.title!,
+    instructions: p.instructions ?? '',
+    opensAt: p.opensAt!,
+    closesAt: p.closesAt!,
+    durationMinutes: p.durationMinutes ?? 30,
+    attemptsAllowed: p.attemptsAllowed ?? 1,
+    passPercent: p.passPercent ?? 50,
+    releasePolicy: p.releasePolicy ?? 'IMMEDIATE',
+    shuffleQuestions: p.shuffleQuestions ?? false,
+  })
+  if (!quiz) return notYours()
+  return c.json(quiz, 201)
+})
+
+app.get('/api/teacher/quizzes/:quizId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const quiz = await quizDetail(c.env.DB, teacher.teacherId, c.req.param('quizId'))
+  if (!quiz) return quizNotFound()
+  return c.json(quiz)
+})
+
+app.patch('/api/teacher/quizzes/:quizId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const db = c.env.DB
+  const quizId = c.req.param('quizId')
+  const existing = await quizDetail(db, teacher.teacherId, quizId)
+  if (!existing) return quizNotFound()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+
+  const fields = quizFieldsFrom(body)
+  if (!fields.ok) return invalid(fields.errors)
+  if (!Object.keys(fields.patch).length) return invalid({ form: 'Change something before saving.' })
+  const opens = fields.patch.opensAt ?? existing.opensAt
+  const closes = fields.patch.closesAt ?? existing.closesAt
+  if (Date.parse(closes) <= Date.parse(opens)) return invalid({ closesAt: 'The quiz must close after it opens.' })
+
+  const updated = await updateQuiz(db, teacher.teacherId, quizId, fields.patch)
+  if (!updated) return quizNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/quizzes/:quizId/publish', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const result = await setQuizPublished(c.env.DB, teacher.teacherId, c.req.param('quizId'), true)
+  if (result.status === 'NOT_FOUND') return quizNotFound()
+  if (result.status === 'INVALID') return c.json({ error: 'Some publish requirements are unmet.', publish: result.quiz.publish }, 422)
+  if (result.status === 'HAS_ATTEMPTS') return quizNotFound()
+  return c.json(result.quiz)
+})
+
+app.post('/api/teacher/quizzes/:quizId/unpublish', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const result = await setQuizPublished(c.env.DB, teacher.teacherId, c.req.param('quizId'), false)
+  if (result.status === 'NOT_FOUND') return quizNotFound()
+  if (result.status === 'HAS_ATTEMPTS') return c.json({ error: 'Students have already started this quiz, so it cannot go back to draft. Close it instead.' }, 409)
+  if (result.status === 'INVALID') return quizNotFound()
+  return c.json(result.quiz)
+})
+
+app.post('/api/teacher/quizzes/:quizId/close', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const updated = await setQuizClosed(c.env.DB, teacher.teacherId, c.req.param('quizId'), true)
+  if (!updated) return quizNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/quizzes/:quizId/reopen', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const updated = await setQuizClosed(c.env.DB, teacher.teacherId, c.req.param('quizId'), false)
+  if (!updated) return quizNotFound()
+  return c.json(updated)
+})
+
+app.post('/api/teacher/quizzes/:quizId/questions', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const db = c.env.DB
+  const quizId = c.req.param('quizId')
+  if (!(await quizDetail(db, teacher.teacherId, quizId))) return quizNotFound()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+  const question = normaliseQuestion(body)
+  if (!question.ok) return invalid({ [question.field]: question.error })
+  return questionResponse(await addQuestion(db, teacher.teacherId, quizId, question.value), true)
+})
+
+app.put('/api/teacher/quiz-questions/:questionId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+  const question = normaliseQuestion(body)
+  if (!question.ok) return invalid({ [question.field]: question.error })
+  return questionResponse(await replaceQuestion(c.env.DB, teacher.teacherId, c.req.param('questionId'), question.value))
+})
+
+app.delete('/api/teacher/quiz-questions/:questionId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  return questionResponse(await deleteQuestion(c.env.DB, teacher.teacherId, c.req.param('questionId')))
+})
+
+app.post('/api/teacher/quiz-questions/:questionId/move', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+  const direction = body.direction === 'UP' || body.direction === 'DOWN' ? body.direction : null
+  if (!direction) return invalid({ direction: 'Choose up or down.' })
+  return questionResponse(await moveQuestion(c.env.DB, teacher.teacherId, c.req.param('questionId'), direction))
+})
+
+app.get('/api/teacher/quiz-attempts/:attemptId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const attempt = await quizAttemptDetail(c.env.DB, teacher.teacherId, c.req.param('attemptId'))
+  if (!attempt) return quizAttemptNotFound()
+  return c.json(attempt)
+})
+
+/** Mark one short answer: { points, comment }. Changing a mark already given is allowed. */
+app.put('/api/teacher/quiz-attempts/:attemptId/answers/:questionId', async (c) => {
+  const teacher = teacherFrom(c)
+  if (!teacher) return noSession()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+  const points = Number(body.points)
+  if (body.points === undefined || body.points === null || body.points === '' || !Number.isInteger(points)) return invalid({ points: 'Enter the points as a whole number.' })
+  if (body.comment !== undefined && typeof body.comment !== 'string') return invalid({ comment: 'The comment must be plain text.' })
+  const comment = typeof body.comment === 'string' ? body.comment.trim() : ''
+  if (comment.length > 2000) return invalid({ comment: 'Keep the comment under 2,000 characters.' })
+
+  const result = await markAnswer(c.env.DB, teacher.teacherId, c.req.param('attemptId'), c.req.param('questionId'), points, comment)
+  if (result.status === 'NOT_FOUND') return quizAttemptNotFound()
+  if (result.status === 'NOT_SUBMITTED') return c.json({ error: 'That attempt is still in progress.' }, 409)
+  if (result.status === 'NOT_SHORT_ANSWER') return c.json({ error: 'Only short answers are marked by hand. Choice questions are scored from the key.' }, 409)
+  if (result.status === 'OUT_OF_RANGE') return invalid({ points: `Award between 0 and ${result.max} points.` })
+  return c.json(result.attempt)
+})
+
 /* ---------------------------- student portal ---------------------------- */
 
 /*
@@ -1180,6 +1438,75 @@ app.post('/api/student/attempts/:attemptId/submit', async (c) => {
   if (result.status === 'LATE_BLOCKED') return c.json({ error: 'This assignment does not accept work after its due date.' }, 409)
   if (result.status === 'EMPTY') return invalid({ text: 'Write your answer before handing in.' })
   if (result.status === 'TOO_LONG') return answerTooLong()
+  return c.json(result.attempt)
+})
+
+/*
+  Quizzes. The same enrolment gate as assignments, inside the store's query.
+  Starting resumes an open attempt; saving is one answer at a time; the deadline
+  is the server's, and a late submit returns the attempt the server already
+  handed in rather than an error.
+*/
+const studentQuizNotFound = () => Response.json({ error: 'That quiz could not be found.' }, { status: 404 })
+
+app.get('/api/student/quizzes', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  c.header('cache-control', 'no-store')
+  return c.json({ items: await quizzesForStudent(c.env.DB, student.id) })
+})
+
+app.get('/api/student/quizzes/:quizId', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  const quiz = await studentQuiz(c.env.DB, student.id, c.req.param('quizId'))
+  c.header('cache-control', 'no-store')
+  if (!quiz) return studentQuizNotFound()
+  return c.json(quiz)
+})
+
+app.post('/api/student/quizzes/:quizId/attempt', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  const result = await startQuizAttempt(c.env.DB, student, c.req.param('quizId'))
+  c.header('cache-control', 'no-store')
+  if (result.status === 'NOT_FOUND') return studentQuizNotFound()
+  if (result.status === 'NOT_OPEN') return c.json({ error: 'This quiz is not open right now.' }, 409)
+  if (result.status === 'EXHAUSTED') return c.json({ error: 'You have used every attempt for this quiz.' }, 409)
+  if (result.status === 'EMPTY') return c.json({ error: 'This quiz has no questions yet.' }, 409)
+  return c.json(result.attempt)
+})
+
+app.get('/api/student/quiz-attempts/:attemptId', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  const attempt = await studentAttempt(c.env.DB, student.id, c.req.param('attemptId'))
+  c.header('cache-control', 'no-store')
+  if (!attempt) return attemptNotFound()
+  return c.json(attempt)
+})
+
+/** Autosave one answer: { value: { optionIds } | { text } }. */
+app.put('/api/student/quiz-attempts/:attemptId/answers/:questionId', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+  const result = await saveQuizAnswer(c.env.DB, student.id, c.req.param('attemptId'), c.req.param('questionId'), body.value)
+  c.header('cache-control', 'no-store')
+  if (result.status === 'NOT_FOUND') return attemptNotFound()
+  if (result.status === 'CLOSED') return c.json({ error: 'Time is up: this attempt has been handed in.' }, 409)
+  if (result.status === 'INVALID') return invalid({ value: result.error })
+  return c.json(result.saved)
+})
+
+app.post('/api/student/quiz-attempts/:attemptId/submit', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  const result = await submitQuizAttempt(c.env.DB, student.id, c.req.param('attemptId'))
+  c.header('cache-control', 'no-store')
+  if (result.status === 'NOT_FOUND') return attemptNotFound()
+  if (result.status === 'ALREADY_SUBMITTED') return c.json({ error: 'That attempt has already been handed in.' }, 409)
   return c.json(result.attempt)
 })
 

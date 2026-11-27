@@ -18,6 +18,8 @@ import { SubjectDetail as StudentSubjectDetail, Subjects as StudentSubjects } fr
 import { RequireStudent, StudentShell } from './learn/components/StudentShell'
 import { StudentAssignmentDetail } from './learn/pages/AssignmentDetail'
 import { StudentAssignments } from './learn/pages/Assignments'
+import { StudentQuizDetail } from './learn/pages/QuizDetail'
+import { StudentQuizzes } from './learn/pages/Quizzes'
 import { StudentSignIn } from './learn/pages/SignIn'
 import { RequireTeacher, TeacherShell } from './teacher/components/TeacherShell'
 import { TeacherAssignmentDetail } from './teacher/pages/AssignmentDetail'
@@ -28,6 +30,9 @@ import { TeacherLectureDetail } from './teacher/pages/LectureDetail'
 import { TeacherLectures } from './teacher/pages/Lectures'
 import { TeacherOverview } from './teacher/pages/Overview'
 import { TeacherPlaceholder } from './teacher/pages/Placeholder'
+import { TeacherQuizAttempt } from './teacher/pages/QuizAttempt'
+import { TeacherQuizDetail } from './teacher/pages/QuizDetail'
+import { TeacherQuizzes } from './teacher/pages/Quizzes'
 import { TeacherSignIn } from './teacher/pages/TeacherSignIn'
 import { TeacherSubjectDetail } from './teacher/pages/SubjectDetail'
 import { TeacherSubmissionDetail } from './teacher/pages/SubmissionDetail'
@@ -89,6 +94,8 @@ function AppRoutes() {
             <Route index element={<Navigate to="/learn/assignments" replace />} />
             <Route path="assignments" element={<StudentAssignments />} />
             <Route path="assignments/:assignmentId" element={<StudentAssignmentDetail />} />
+            <Route path="quizzes" element={<StudentQuizzes />} />
+            <Route path="quizzes/:quizId" element={<StudentQuizDetail />} />
           </Route>
 
           <Route path="teach/signin" element={<TeacherSignIn />} />
@@ -112,17 +119,9 @@ function AppRoutes() {
             <Route path="assignments/:assignmentId" element={<TeacherAssignmentDetail />} />
             <Route path="submissions" element={<TeacherSubmissions />} />
             <Route path="submissions/:submissionId" element={<TeacherSubmissionDetail />} />
-            <Route
-              path="quizzes"
-              element={
-                <TeacherPlaceholder
-                  title="Quizzes & Tests"
-                  phase="Phase 4"
-                  description="Build quizzes, publish them and read the results."
-                  items={['Multiple-choice, true/false and short answer', 'Duration, window, attempts and pass mark', 'Automatic scoring for objective questions', 'Manual marking queue for short answers']}
-                />
-              }
-            />
+            <Route path="quizzes" element={<TeacherQuizzes />} />
+            <Route path="quizzes/:quizId" element={<TeacherQuizDetail />} />
+            <Route path="quizzes/:quizId/attempts/:attemptId" element={<TeacherQuizAttempt />} />
             <Route
               path="live"
               element={

@@ -12,6 +12,7 @@ export type ApiClient = {
   get: <T>(url: string) => Promise<ApiResult<T>>
   post: <T>(url: string, body: unknown) => Promise<ApiResult<T>>
   patch: <T>(url: string, body: unknown) => Promise<ApiResult<T>>
+  put: <T>(url: string, body: unknown) => Promise<ApiResult<T>>
   del: <T>(url: string) => Promise<ApiResult<T>>
 }
 
@@ -23,7 +24,7 @@ const fallbackFor = (status: number, expired: string) => {
   return 'Something went wrong. Please try again.'
 }
 
-async function request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, body: unknown, expired: string): Promise<ApiResult<T>> {
+async function request<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', url: string, body: unknown, expired: string): Promise<ApiResult<T>> {
   try {
     const res = await fetch(url, {
       method,
@@ -52,6 +53,7 @@ export function createApiClient({ expired }: { expired: string }): ApiClient {
     get: <T>(url: string) => request<T>('GET', url, undefined, expired),
     post: <T>(url: string, body: unknown) => request<T>('POST', url, body, expired),
     patch: <T>(url: string, body: unknown) => request<T>('PATCH', url, body, expired),
+    put: <T>(url: string, body: unknown) => request<T>('PUT', url, body, expired),
     del: <T>(url: string) => request<T>('DELETE', url, undefined, expired),
   }
 }
