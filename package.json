@@ -7,7 +7,9 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build && node scripts/postbuild.mjs",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "hono": "^4.13.0",
@@ -27,6 +29,7 @@
     "tailwindcss": "^4.3.0",
     "typescript": "^5.9.0",
     "vite": "^8.3.0",
+    "vitest": "^5.1.2",
     "wrangler": "^4.151.0"
   }
 }
