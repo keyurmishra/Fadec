@@ -28,13 +28,14 @@ async function getEnv() {
   return env
 }
 
-type CallOptions = { method?: string; body?: unknown; rawBody?: string; cookie?: string; secret?: string | null; teacherSecret?: string | null; contentType?: string }
+type CallOptions = { method?: string; body?: unknown; rawBody?: string; cookie?: string; secret?: string | null; teacherSecret?: string | null; contentType?: string; db?: D1Database }
 
 /** Sends one request through the app and returns the status, headers and parsed JSON. */
-export async function call(path: string, { method, body, rawBody, cookie, secret, teacherSecret, contentType }: CallOptions = {}) {
+export async function call(path: string, { method, body, rawBody, cookie, secret, teacherSecret, contentType, db }: CallOptions = {}) {
   const base = await getEnv()
   let bindings = secret === undefined ? base : { ...base, STUDENT_SESSION_SECRET: secret ?? undefined }
   if (teacherSecret !== undefined) bindings = { ...bindings, TEACHER_SESSION_SECRET: teacherSecret ?? undefined }
+  if (db) bindings = { ...bindings, DB: db }
   const headers = new Headers()
   if (cookie) headers.set('cookie', cookie)
   let payload: string | undefined

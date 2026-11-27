@@ -19,6 +19,7 @@ import {
   type AssignmentPatch,
 } from '../teacher/assignments'
 import { ensureDatabase } from '../teacher/db'
+import { apiError, apiNotFound, badJson, implausiblePath, invalid, serverError, unavailable } from './errors'
 import { assignmentsForStudent, MAX_ANSWER_LENGTH, saveAttempt, startAttempt, studentAssignment, submitAttempt } from '../teacher/student-assignments'
 import { addChapter, addLesson, addSection, deleteChapter, deleteLesson, deleteSection, move, outlineFor, publishValidation } from '../teacher/curriculum'
 import { courseForTeacher, coursesForTeacher, setCourseStatus } from '../teacher/courses'
@@ -102,13 +103,28 @@ async function readBody(req: Request): Promise<Record<string, unknown> | null> {
   }
 }
 
-const invalid = (fieldErrors: FieldErrors) => Response.json({ error: 'Please check the highlighted fields.', fieldErrors }, { status: 422 })
-const badJson = () => Response.json({ error: 'Send a JSON object.' }, { status: 400 })
+/*
+  Anything a route did not expect: a D1 failure, a bug, a malformed stored row.
+  The cause goes to the Worker log with the request it belongs to; the caller
+  gets the standard JSON error, never a stack trace or an HTML page.
+*/
+app.onError((error, c) => {
+  console.error(`Unhandled error on ${c.req.method} ${new URL(c.req.url).pathname}:`, error)
+  return serverError()
+})
 
-// Create the tables and seed the catalogue on the first request this isolate
-// serves, then reuse that result for every later request.
+// Refuse ids no route could own, then create the tables and seed the catalogue
+// on the first request this isolate serves and reuse that result afterwards.
+// When storage itself is down the answer is 503, not a 500: nothing is wrong
+// with the request, and a retry may succeed.
 app.use('/api/*', async (c, next) => {
-  await ensureDatabase(c.env.DB)
+  if (implausiblePath(new URL(c.req.url).pathname)) return apiNotFound()
+  try {
+    await ensureDatabase(c.env.DB)
+  } catch (error) {
+    console.error('Database setup failed:', error)
+    return unavailable()
+  }
   await next()
 })
 
@@ -198,8 +214,8 @@ async function teacherFrom(c: SessionRequest) {
   return TEACHERS.find((t) => t.teacherId === session.teacherId) ?? null
 }
 
-const noSession = () => Response.json({ error: 'Sign in to the teaching studio to continue.' }, { status: 401 })
-const notYours = () => Response.json({ error: 'That course could not be found.' }, { status: 404 })
+const noSession = () => apiError(401, 'Sign in to the teaching studio to continue.')
+const notYours = () => apiError(404, 'That course could not be found.')
 
 type StudentRequest = SessionRequest
 
@@ -212,7 +228,7 @@ async function studentFrom(c: StudentRequest): Promise<StudentIdentityDTO | null
   return studentById(c.env.DB, session.studentId)
 }
 
-const noStudentSession = () => Response.json({ error: 'Sign in to the student portal to continue.' }, { status: 401 })
+const noStudentSession = () => apiError(401, 'Sign in to the student portal to continue.')
 
 app.post('/api/teacher/signin', async (c) => {
   const secret = c.env.TEACHER_SESSION_SECRET
@@ -414,7 +430,7 @@ app.post('/api/teacher/courses/:courseId/unpublish', async (c) => {
 
 /* ------------------------------ lectures ------------------------------ */
 
-const lectureNotFound = () => Response.json({ error: 'That lecture is not in one of your courses.' }, { status: 404 })
+const lectureNotFound = () => apiError(404, 'That lecture is not in one of your courses.')
 
 /** A datetime field: null or "" clears it, a bad value is reported to the caller. */
 function parseIso(value: unknown): { ok: true; value: string | null } | { ok: false } {
@@ -547,9 +563,9 @@ app.delete('/api/teacher/lectures/:lectureId/resources/:resourceId', async (c) =
 
 /* ------------------------------ subjects ------------------------------ */
 
-const subjectNotFound = () => Response.json({ error: 'That subject is not in one of your courses.' }, { status: 404 })
-const topicNotFound = () => Response.json({ error: 'That topic could not be found.' }, { status: 404 })
-const syllabusLessonNotFound = () => Response.json({ error: 'That lesson could not be found.' }, { status: 404 })
+const subjectNotFound = () => apiError(404, 'That subject is not in one of your courses.')
+const topicNotFound = () => apiError(404, 'That topic could not be found.')
+const syllabusLessonNotFound = () => apiError(404, 'That lesson could not be found.')
 
 /** Optional short text: undefined when absent, null when the wrong type or too long. */
 function textFrom(value: unknown, max: number): { ok: true; value: string | undefined } | { ok: false } {
@@ -828,8 +844,8 @@ app.delete('/api/teacher/subject-lessons/:lessonId/lectures/:lectureId', async (
 
 /* ------------------------ assignments and marking ----------------------- */
 
-const assignmentNotFound = () => Response.json({ error: 'That assignment is not in one of your courses.' }, { status: 404 })
-const submissionNotFound = () => Response.json({ error: 'That submission is not in one of your courses.' }, { status: 404 })
+const assignmentNotFound = () => apiError(404, 'That assignment is not in one of your courses.')
+const submissionNotFound = () => apiError(404, 'That submission is not in one of your courses.')
 
 const LATE_POLICIES: LatePolicy[] = ['BLOCK', 'ALLOW', 'MARK_LATE']
 
@@ -1087,10 +1103,10 @@ app.post('/api/teacher/submissions/:submissionId/withdraw', async (c) => {
 
 /* -------------------------------- quizzes -------------------------------- */
 
-const quizNotFound = () => Response.json({ error: 'That quiz is not in one of your courses.' }, { status: 404 })
-const questionNotFound = () => Response.json({ error: 'That question is not in one of your quizzes.' }, { status: 404 })
-const quizAttemptNotFound = () => Response.json({ error: 'That attempt is not in one of your quizzes.' }, { status: 404 })
-const quizLocked = () => Response.json({ error: 'Questions are fixed once a quiz is published. Unpublish it to edit them.' }, { status: 409 })
+const quizNotFound = () => apiError(404, 'That quiz is not in one of your courses.')
+const questionNotFound = () => apiError(404, 'That question is not in one of your quizzes.')
+const quizAttemptNotFound = () => apiError(404, 'That attempt is not in one of your quizzes.')
+const quizLocked = () => apiError(409, 'Questions are fixed once a quiz is published. Unpublish it to edit them.')
 
 const releasePolicyFrom = (value: unknown): QuizReleasePolicy | null => RELEASE_POLICIES.find((p) => p === value) ?? null
 
@@ -1098,7 +1114,7 @@ const releasePolicyFrom = (value: unknown): QuizReleasePolicy | null => RELEASE_
 function questionResponse(result: QuestionResult, created = false) {
   if (result.status === 'NOT_FOUND') return questionNotFound()
   if (result.status === 'LOCKED') return quizLocked()
-  if (result.status === 'NO_MOVE') return Response.json({ error: 'That question cannot move any further.' }, { status: 409 })
+  if (result.status === 'NO_MOVE') return apiError(409, 'That question cannot move any further.')
   return Response.json(result.quiz, { status: created ? 201 : 200 })
 }
 
@@ -1391,7 +1407,7 @@ app.get('/api/student/assignments/:assignmentId', async (c) => {
   the attempt count and whether the window is open are all decided inside the
   store from rows it reads itself, not from the request body.
 */
-const attemptNotFound = () => Response.json({ error: 'That attempt could not be found.' }, { status: 404 })
+const attemptNotFound = () => apiError(404, 'That attempt could not be found.')
 
 /** The answer body, or null when the field is not text at all. */
 const answerText = (value: unknown): string | null => (typeof value === 'string' ? value : null)
@@ -1455,7 +1471,7 @@ app.post('/api/student/attempts/:attemptId/submit', async (c) => {
   is the server's, and a late submit returns the attempt the server already
   handed in rather than an error.
 */
-const studentQuizNotFound = () => Response.json({ error: 'That quiz could not be found.' }, { status: 404 })
+const studentQuizNotFound = () => apiError(404, 'That quiz could not be found.')
 
 app.get('/api/student/quizzes', async (c) => {
   const student = await studentFrom(c)
@@ -1534,7 +1550,7 @@ app.get('/api/subjects/:subjectId', async (c) => {
   return c.json(subject)
 })
 
-app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404))
+app.all('/api/*', () => apiNotFound())
 
 app.all('*', (c) => c.env.ASSETS.fetch(c.req.raw))
 
