@@ -7,7 +7,7 @@ import { Checkbox, Input, Select } from '../../components/Field'
 import { Modal } from '../../components/Modal'
 import { useToast } from '../../components/Toast'
 import { Badge, EmptyState, Skeleton, type Tone } from '../../components/ui'
-import type { LectureResourceDTO, TeacherLectureDetailDTO } from '../../contracts/teaching'
+import type { LectureResourceDTO, LectureWatchStatsDTO, TeacherLectureDetailDTO } from '../../contracts/teaching'
 import { cx } from '../../lib/cx'
 import { teacherApi } from '../../lib/teacher-api'
 import { useDocumentTitle } from '../../lib/useDocumentTitle'
@@ -253,7 +253,6 @@ export function TeacherLectureDetail() {
   const availabilityTone: Tone = lecture.availability.status === 'SCHEDULED' ? 'amber' : lecture.availability.status === 'EXPIRED' ? 'danger' : 'lime'
   const availabilityLabel =
     lecture.availability.status === 'SCHEDULED' ? 'Scheduled' : lecture.availability.status === 'EXPIRED' ? 'Closed to students' : 'Available now'
-  const peakStarts = Math.max(1, ...lecture.watch.trend.map((d) => d.starts))
 
   return (
     <section className="flex flex-col gap-6">
@@ -481,58 +480,16 @@ export function TeacherLectureDetail() {
             </div>
           </Panel>
 
-          <Panel title="Watch statistics" description="How far students get once the lecture is live.">
-            <dl className="grid grid-cols-2 divide-x divide-y divide-line border-b border-line">
-              {[
-                { k: 'Enrolled', v: String(lecture.watch.enrolled) },
-                { k: 'Started', v: String(lecture.watch.started) },
-                { k: 'Completed', v: String(lecture.watch.completed) },
-                { k: 'Average watch', v: `${lecture.watch.averageWatchMinutes} min` },
-              ].map((s) => (
-                <div key={s.k} className="flex flex-col gap-1 px-5 py-3">
-                  <dt className="text-[11.5px] text-muted">{s.k}</dt>
-                  <dd className="figures text-[21px] leading-none font-semibold">{s.v}</dd>
-                </div>
-              ))}
-            </dl>
-
-            <div className="flex flex-col gap-1.5 px-5 py-3">
-              <span className="flex items-center justify-between text-[12px] text-muted">
-                <span>Completion</span>
-                <span className="figures">{lecture.watch.completionPercent}%</span>
-              </span>
-              <ProgressBar value={lecture.watch.completionPercent} label=" " />
-              <span className="text-[11.5px] text-muted">Average student watches {lecture.watch.averageWatchPercent}% of the runtime.</span>
-            </div>
-
-            <div className="flex flex-col gap-2 border-t border-line px-5 py-4">
-              <p className="text-[11px] font-semibold tracking-[0.12em] text-muted uppercase">Starts, last 7 days</p>
-              <div className="flex h-20 items-end gap-1.5" aria-hidden>
-                {lecture.watch.trend.map((d) => (
-                  <span
-                    key={d.date}
-                    className={cx('block flex-1', d.starts ? 'bg-navy' : 'bg-[rgb(15_33_55/0.12)]')}
-                    style={{ height: `${d.starts ? Math.max(4, (d.starts / peakStarts) * 100) : 3}%` }}
-                  />
-                ))}
-              </div>
-              <div className="flex gap-1.5">
-                {lecture.watch.trend.map((d) => (
-                  <span key={d.date} className="flex-1 text-center text-[10.5px] text-faint">
-                    {new Date(`${d.date}T00:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' })}
-                  </span>
-                ))}
-              </div>
-              <ul className="sr-only">
-                {lecture.watch.trend.map((d) => (
-                  <li key={d.date}>
-                    {d.date}: {d.starts} starts
-                  </li>
-                ))}
-              </ul>
-              {!lecture.watch.started && <p className="text-[11.5px] text-muted">No viewing data yet. Numbers begin once a published video lecture is watched.</p>}
-            </div>
-          </Panel>
+          {lecture.watch ? (
+            <WatchStats watch={lecture.watch} />
+          ) : (
+            <Panel title="Watch statistics" description="Not recorded yet.">
+              <p className="px-5 py-4 text-[13px] leading-relaxed text-muted">
+                Students cannot play lectures in the portal yet, so nothing records who started or finished this one. Numbers will appear here once lecture playback and progress
+                tracking are built; until then none are shown rather than estimated.
+              </p>
+            </Panel>
+          )}
 
           <Panel title="Publish checklist" description={lecture.publish.canPublish ? 'Every requirement is met.' : `${unmet.length} requirement${unmet.length === 1 ? '' : 's'} outstanding`}>
             <ul className="flex flex-col divide-y divide-line">
@@ -635,5 +592,64 @@ export function TeacherLectureDetail() {
         <p className="text-[14px] text-muted">Students lose this download. This cannot be undone.</p>
       </Modal>
     </section>
+  )
+}
+
+/** Viewing numbers for a lecture, once the platform records them. */
+function WatchStats({ watch }: { watch: LectureWatchStatsDTO }) {
+  const peakStarts = Math.max(1, ...watch.trend.map((d) => d.starts))
+  return (
+    <Panel title="Watch statistics" description="How far students get once the lecture is live.">
+      <dl className="grid grid-cols-2 divide-x divide-y divide-line border-b border-line">
+        {[
+          { k: 'Enrolled', v: String(watch.enrolled) },
+          { k: 'Started', v: String(watch.started) },
+          { k: 'Completed', v: String(watch.completed) },
+          { k: 'Average watch', v: `${watch.averageWatchMinutes} min` },
+        ].map((s) => (
+          <div key={s.k} className="flex flex-col gap-1 px-5 py-3">
+            <dt className="text-[11.5px] text-muted">{s.k}</dt>
+            <dd className="figures text-[21px] leading-none font-semibold">{s.v}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <div className="flex flex-col gap-1.5 px-5 py-3">
+        <span className="flex items-center justify-between text-[12px] text-muted">
+          <span>Completion</span>
+          <span className="figures">{watch.completionPercent}%</span>
+        </span>
+        <ProgressBar value={watch.completionPercent} label=" " />
+        <span className="text-[11.5px] text-muted">Average student watches {watch.averageWatchPercent}% of the runtime.</span>
+      </div>
+
+      <div className="flex flex-col gap-2 border-t border-line px-5 py-4">
+        <p className="text-[11px] font-semibold tracking-[0.12em] text-muted uppercase">Starts, last 7 days</p>
+        <div className="flex h-20 items-end gap-1.5" aria-hidden>
+          {watch.trend.map((d) => (
+            <span
+              key={d.date}
+              className={cx('block flex-1', d.starts ? 'bg-navy' : 'bg-[rgb(15_33_55/0.12)]')}
+              style={{ height: `${d.starts ? Math.max(4, (d.starts / peakStarts) * 100) : 3}%` }}
+            />
+          ))}
+        </div>
+        <div className="flex gap-1.5">
+          {watch.trend.map((d) => (
+            <span key={d.date} className="flex-1 text-center text-[10.5px] text-faint">
+              {new Date(`${d.date}T00:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' })}
+            </span>
+          ))}
+        </div>
+        <ul className="sr-only">
+          {watch.trend.map((d) => (
+            <li key={d.date}>
+              {d.date}: {d.starts} starts
+            </li>
+          ))}
+        </ul>
+        {!watch.started && <p className="text-[11.5px] text-muted">No viewing data yet. Numbers begin once a published video lecture is watched.</p>}
+      </div>
+    </Panel>
   )
 }

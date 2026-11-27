@@ -9,7 +9,7 @@ import type { CourseStatus } from '../../contracts/catalog'
 import type { TeacherCourseSummaryDTO } from '../../contracts/teaching'
 import { teacherApi } from '../../lib/teacher-api'
 import { useDocumentTitle } from '../../lib/useDocumentTitle'
-import { PageHeader, ProgressBar } from '../components/ui'
+import { NotTracked, PageHeader, ProgressBar } from '../components/ui'
 
 /*
   My Courses: the grid and the table read the same payload, so switching view
@@ -36,13 +36,15 @@ const FILTERS = [
 const matchesFilter = (status: CourseStatus, filter: string) =>
   filter === 'ALL' ? true : filter === 'DRAFT' ? status === 'DRAFT' || status === 'UNPUBLISHED' || status === 'IN_REVIEW' : status === filter
 
-type Sort = 'updated' | 'title' | 'students' | 'completion'
+/** Why the completion column is empty, shown on hover. */
+const COMPLETION_NOT_TRACKED = 'Learner progress is not recorded yet, so course completion cannot be measured.'
+
+type Sort = 'updated' | 'title' | 'students'
 
 const SORTS: { value: Sort; label: string }[] = [
   { value: 'updated', label: 'Recently updated' },
   { value: 'title', label: 'Title A–Z' },
   { value: 'students', label: 'Most students' },
-  { value: 'completion', label: 'Completion' },
 ]
 
 const updatedLabel = (iso: string) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -77,7 +79,6 @@ export function TeacherCourses() {
     return list.slice().sort((a, b) => {
       if (sort === 'title') return a.title.localeCompare(b.title)
       if (sort === 'students') return b.enrolledCount - a.enrolledCount
-      if (sort === 'completion') return b.completionPercent - a.completionPercent
       return Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
     })
   }, [courses, filter, query, sort])
@@ -251,9 +252,9 @@ function CourseCard({ course }: { course: TeacherCourseSummaryDTO }) {
         <div className="flex flex-col gap-1.5">
           <span className="flex items-center justify-between text-[11.5px] text-muted">
             <span>Completion</span>
-            <span>{course.completionPercent}%</span>
+            {course.completionPercent === null ? <NotTracked reason={COMPLETION_NOT_TRACKED} /> : <span>{course.completionPercent}%</span>}
           </span>
-          <ProgressBar value={course.completionPercent} label=" " />
+          {course.completionPercent !== null && <ProgressBar value={course.completionPercent} label=" " />}
         </div>
 
         <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
@@ -307,7 +308,7 @@ function CourseTable({ courses }: { courses: TeacherCourseSummaryDTO[] }) {
                 </td>
                 <td className="figures px-3 py-3.5 text-right">{c.assignmentCount}</td>
                 <td className="w-[150px] px-3 py-3.5">
-                  <ProgressBar value={c.completionPercent} />
+                  {c.completionPercent === null ? <NotTracked reason={COMPLETION_NOT_TRACKED} /> : <ProgressBar value={c.completionPercent} />}
                 </td>
                 <td className="figures px-5 py-3.5 text-right text-[12.5px] text-muted">{updatedLabel(c.updatedAt)}</td>
               </tr>

@@ -1,16 +1,17 @@
 /*
   Lecture state: everything that hangs off one lecture rather than off the
   course tree. The curriculum module owns ordering and the module → chapter →
-  lecture structure; this one owns notes, resources, availability windows,
-  publish state and the watch numbers the studio reports.
+  lecture structure; this one owns notes, resources, availability windows
+  and publish state.
 
   A lecture is a row in `lessons`. The fields the builder edits live in that
   same row, so a subject syllabus link and the course curriculum always read one
   record rather than two copies.
 
-  Watch numbers are derived, not random: they are a stable function of the
-  lecture id and the course's enrolment count, so two screens asking for the
-  same lecture always agree.
+  Watch statistics are not reported. Nothing records a student opening or
+  watching a lecture yet (there is no playback in the portal and no progress
+  table), so the payload carries null rather than numbers. They used to be
+  generated from a hash of the lecture id, which looked like data and was not.
 */
 import type { CourseStatus } from '../contracts/catalog'
 import type {
@@ -70,15 +71,6 @@ type ResourceRow = {
   added_at: string
 }
 
-const hash = (input: string) => {
-  let h = 2166136261
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i)
-    h = Math.imul(h, 16777619)
-  }
-  return h >>> 0
-}
-
 async function resourcesFor(db: Db, lectureId: string): Promise<LectureResourceDTO[]> {
   const rows = await query<ResourceRow>(db, `SELECT id, title, kind, external_url, size_bytes, added_at FROM lesson_resources WHERE lesson_id = ?1 ORDER BY position, id`, lectureId)
   return rows.map((row) => ({ id: row.id, title: row.title, kind: row.kind, externalUrl: row.external_url, sizeBytes: row.size_bytes, addedAt: row.added_at }))
@@ -89,43 +81,6 @@ function availabilityStatus(row: LectureRow): LectureAvailabilityStatus {
   if (row.available_from && Date.parse(row.available_from) > now) return 'SCHEDULED'
   if (row.available_until && Date.parse(row.available_until) <= now) return 'EXPIRED'
   return 'IMMEDIATE'
-}
-
-/** Last seven days, oldest first, in UTC. */
-function lastSevenDays() {
-  const now = new Date()
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (6 - i)))
-    return { date: d.toISOString().slice(0, 10), starts: 0 }
-  })
-}
-
-function watchFor(row: LectureRow) {
-  const enrolled = row.enrolled_count
-  const live = row.status === 'PUBLISHED' && row.media_status === 'READY'
-  const trend = lastSevenDays()
-  if (!live || enrolled === 0) {
-    return { enrolled, started: 0, completed: 0, completionPercent: 0, averageWatchMinutes: 0, averageWatchPercent: 0, trend }
-  }
-
-  const h = hash(row.id)
-  const started = Math.max(1, Math.min(enrolled, Math.round(enrolled * (0.55 + (h % 40) / 100))))
-  const completed = Math.min(started, Math.round(started * (0.4 + ((h >>> 7) % 45) / 100)))
-  const averageWatchPercent = 45 + ((h >>> 11) % 50)
-
-  trend.forEach((day, i) => {
-    day.starts = Math.round((started / 9) * (0.6 + ((h >>> (i + 3)) % 60) / 100))
-  })
-
-  return {
-    enrolled,
-    started,
-    completed,
-    completionPercent: Math.round((completed / enrolled) * 100),
-    averageWatchMinutes: Math.max(1, Math.round((row.estimated_minutes * averageWatchPercent) / 100)),
-    averageWatchPercent,
-    trend,
-  }
 }
 
 function validationFor(row: LectureRow, body: string | null): TeacherLectureValidationDTO {
@@ -161,7 +116,7 @@ function validationFor(row: LectureRow, body: string | null): TeacherLectureVali
 /** TEXT lectures default to an empty draft rather than null, as the builder expects. */
 const bodyOf = (row: LectureRow) => (row.kind === 'TEXT' ? (row.body ?? '') : row.body)
 
-function toSummary(row: LectureRow, watch: ReturnType<typeof watchFor>): TeacherLectureSummaryDTO {
+function toSummary(row: LectureRow): TeacherLectureSummaryDTO {
   return {
     id: row.id,
     courseId: row.course_id,
@@ -175,7 +130,8 @@ function toSummary(row: LectureRow, watch: ReturnType<typeof watchFor>): Teacher
     mediaStatus: row.media_status,
     isPreview: !!row.is_preview,
     resourceCount: row.resource_count,
-    watchCompletionPercent: watch.completionPercent,
+    // No viewing data is recorded yet; see the note at the top of this file.
+    watchCompletionPercent: null,
     availabilityStatus: availabilityStatus(row),
     updatedAt: row.updated_at,
   }
@@ -183,12 +139,11 @@ function toSummary(row: LectureRow, watch: ReturnType<typeof watchFor>): Teacher
 
 async function buildDetail(db: Db, row: LectureRow): Promise<TeacherLectureDetailDTO> {
   const [resources] = await Promise.all([resourcesFor(db, row.id)])
-  const watch = watchFor(row)
   const availability = availabilityStatus(row)
   const body = bodyOf(row)
 
   return {
-    ...toSummary(row, watch),
+    ...toSummary(row),
     resourceCount: resources.length,
     sectionId: row.section_id,
     chapterId: row.chapter_id,
@@ -196,7 +151,7 @@ async function buildDetail(db: Db, row: LectureRow): Promise<TeacherLectureDetai
     body,
     resources,
     availability: { availableFrom: row.available_from, availableUntil: row.available_until, status: availability },
-    watch,
+    watch: null,
     courseStatus: row.course_status,
     media: row.media_status === 'READY' ? { assetId: `asset-${row.id}`, durationSeconds: row.estimated_minutes * 60 } : null,
     publish: validationFor(row, body),
@@ -213,7 +168,7 @@ export async function lecturesForTeacher(db: Db, teacherId: string): Promise<Tea
      ORDER BY s.position, ch.position, l.position, l.id`,
     teacherId,
   )
-  return rows.map((row) => toSummary(row, watchFor(row)))
+  return rows.map((row) => toSummary(row))
 }
 
 export async function lectureDetail(db: Db, teacherId: string, lectureId: string): Promise<TeacherLectureDetailDTO | null> {

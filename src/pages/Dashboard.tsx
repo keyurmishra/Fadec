@@ -128,6 +128,20 @@ function Hub() {
   return (
     <section className="pt-2 pb-24">
       <Container className="flex flex-col gap-8">
+        {/*
+          Everything on this page (timetable, grades, deadlines, the student
+          themselves) is sample content from content.ts, kept on this device. It
+          is labelled so nobody reads it as their record. Whether the page is
+          retired or pointed at the student portal is an open product decision.
+        */}
+        <div role="note" className="flex flex-col gap-1 border border-amber-deep/40 bg-surface px-4 py-3 text-[13px] leading-relaxed md:flex-row md:items-center md:justify-between md:gap-4">
+          <p>
+            <span className="font-semibold">Demo data.</span> This hub shows a sample student's timetable, grades and deadlines. None of it is read from your account.
+          </p>
+          <Link to="/learn/signin" className="shrink-0 font-medium underline decoration-line-strong underline-offset-4 hover:text-amber-ink">
+            Open the student portal
+          </Link>
+        </div>
         <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
           <div className="flex items-center gap-4">
             <img src={img('cam-student-2')} alt="" className="size-16 shrink-0 rounded-full border border-line object-cover" />
