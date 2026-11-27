@@ -108,6 +108,18 @@ export type StudentAssignmentSummaryDTO = {
  */
 export type StudentAttemptStatus = 'IN_PROGRESS' | 'SUBMITTED'
 
+/**
+ * A mark the teacher has returned. The portal is only sent one once the grade is
+ * published: a score the studio saved as a draft is not part of this payload, so
+ * a mark that is still being decided cannot leak to the student.
+ */
+export type StudentAttemptGradeDTO = {
+  score: number
+  /** Empty when the teacher returned a mark without a written comment. */
+  feedback: string
+  publishedAt: IsoDateTime
+}
+
 export type StudentAttemptDTO = {
   id: Id
   assignmentId: Id
@@ -120,6 +132,8 @@ export type StudentAttemptDTO = {
   submittedAt: IsoDateTime | null
   /** Decided against the due date on the server, never by the client. */
   isLate: boolean
+  /** Null until the teacher publishes a mark for this attempt. */
+  grade: StudentAttemptGradeDTO | null
 }
 
 export type StudentAssignmentDetailDTO = StudentAssignmentSummaryDTO & {

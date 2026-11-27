@@ -106,6 +106,11 @@ type AttemptRow = {
   created_at: string
   submitted_at: string
   is_late: number
+  /** A saved draft mark carries a score with no publication time. */
+  score: number | null
+  feedback: string
+  /** When the studio returned the mark; null keeps it out of the student payload. */
+  grade_published_at: string | null
   /** Joined so lateness and the policy are read from the assignment, not the client. */
   due_at: string
   late_policy: LatePolicy
@@ -119,7 +124,8 @@ type AttemptRow = {
 */
 const SELECT_ATTEMPT = `
   SELECT s.id, s.assignment_id, s.attempt_number, s.status, s.answer_text,
-         s.created_at, s.submitted_at, s.is_late, a.due_at, a.late_policy
+         s.created_at, s.submitted_at, s.is_late, s.score, s.feedback,
+         s.published_at AS grade_published_at, a.due_at, a.late_policy
   FROM assignment_submissions s
   JOIN assignments a ON a.id = s.assignment_id
   JOIN courses c ON c.id = a.course_id
@@ -128,6 +134,15 @@ const SELECT_ATTEMPT = `
 
 function attemptDto(row: AttemptRow): StudentAttemptDTO {
   const submitted = row.status === 'SUBMITTED'
+  /*
+    published_at is what the studio sets when it returns a mark. A score on its
+    own is a draft, so it stays out of the payload rather than being hidden on
+    the screen: the browser is never sent a mark the student may not see yet.
+  */
+  const grade: StudentAttemptDTO['grade'] =
+    submitted && row.grade_published_at !== null && row.score !== null
+      ? { score: row.score, feedback: row.feedback, publishedAt: row.grade_published_at }
+      : null
   return {
     id: row.id,
     assignmentId: row.assignment_id,
@@ -137,6 +152,7 @@ function attemptDto(row: AttemptRow): StudentAttemptDTO {
     startedAt: row.created_at,
     submittedAt: submitted ? row.submitted_at : null,
     isLate: !!row.is_late,
+    grade,
   }
 }
 

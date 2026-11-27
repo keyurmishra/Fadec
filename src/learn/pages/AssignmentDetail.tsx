@@ -270,16 +270,39 @@ function HandIn({ assignment }: { assignment: StudentAssignmentDetailDTO }) {
         )}
 
         {handedIn.length > 0 && (
-          <ul className="flex flex-col gap-px border border-line bg-line">
-            {handedIn.map((attempt) => (
-              <li key={attempt.id} className="flex flex-wrap items-center justify-between gap-2 bg-surface px-4 py-3">
-                <span className="text-[13px] text-muted">
-                  Attempt {attempt.attemptNumber} · handed in {attempt.submittedAt ? dateTimeLabel(attempt.submittedAt) : ''}
-                </span>
-                <Badge tone={attempt.isLate ? 'amber' : 'lime'}>{attempt.isLate ? 'Late' : 'On time'}</Badge>
-              </li>
-            ))}
-          </ul>
+          <div className="flex flex-col gap-2">
+            <h3 className="text-[13px] font-semibold">Handed in</h3>
+            <ul className="flex flex-col gap-px border border-line bg-line">
+              {handedIn.map((attempt) => (
+                <li key={attempt.id} className="flex flex-col gap-2.5 bg-surface px-4 py-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[13px] text-muted">
+                      Attempt {attempt.attemptNumber} · handed in {attempt.submittedAt ? dateTimeLabel(attempt.submittedAt) : ''}
+                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone={attempt.isLate ? 'amber' : 'lime'}>{attempt.isLate ? 'Late' : 'On time'}</Badge>
+                      {attempt.grade && (
+                        <Badge tone="violet">
+                          {attempt.grade.score} / {assignment.maxScore}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  {attempt.grade ? (
+                    <div className="flex flex-col gap-1.5 border-t border-line pt-2.5">
+                      <p className="text-[12.5px] text-muted">Returned {dateTimeLabel(attempt.grade.publishedAt)}</p>
+                      <p className="text-[13.5px] leading-relaxed whitespace-pre-line">
+                        {attempt.grade.feedback || 'No written feedback was added.'}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-[12.5px] text-muted">No mark has been returned for this attempt yet.</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         {error && (
@@ -296,7 +319,7 @@ function HandIn({ assignment }: { assignment: StudentAssignmentDetailDTO }) {
         )}
 
         <p className="border-t border-line pt-3 text-[12.5px] leading-relaxed text-muted">
-          Your teacher marks handed-in work in the teaching studio. Marks and feedback are not shown in this portal yet.
+          Your teacher marks handed-in work in the teaching studio. A mark and its feedback appear above once your teacher returns them to you.
         </p>
       </div>
     </Card>

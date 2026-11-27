@@ -51,7 +51,7 @@ export function StudentAssignments() {
           <p className="text-[11px] font-semibold tracking-[0.16em] text-amber-ink uppercase">Assignments</p>
           <h1 className="font-display text-[32px] leading-[1.05] tracking-[-0.015em] md:text-[40px]">What you have been set</h1>
           <p className="text-[14.5px] leading-relaxed text-muted">
-            Everything published for your enrolled courses. Open one to write your answer and hand it in; files and marks are not part of this portal yet.
+            Everything published for your enrolled courses. Open one to write your answer, hand it in and see the mark once your teacher has returned it; file uploads are not part of this portal yet.
           </p>
         </div>
         {state.status === 'error' && (
