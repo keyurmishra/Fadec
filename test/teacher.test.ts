@@ -30,7 +30,7 @@ describe('teacher session', () => {
   })
 
   it('answers 401 without a session on every studio route', async () => {
-    for (const path of ['/api/teacher/me', '/api/teacher/dashboard', '/api/teacher/courses', '/api/teacher/assignments', '/api/teacher/submissions', '/api/teacher/subjects', '/api/teacher/lectures']) {
+    for (const path of ['/api/teacher/me', '/api/teacher/dashboard', '/api/teacher/courses', '/api/teacher/assignments', '/api/teacher/submissions', '/api/teacher/subjects', '/api/teacher/lectures', '/api/teacher/quizzes', '/api/teacher/quizzes/qz-any', '/api/teacher/quiz-attempts/qat-any']) {
       const res = await call(path)
       expect(res.status, path).toBe(401)
     }
@@ -55,7 +55,12 @@ describe('teacher session', () => {
       `fadec_teacher=v1.TCH-2011-004.${Number(expiry) + 1}.${signature}`,
       'fadec_teacher=v1.TCH-2011-004.9999999999999.00',
     ]
-    for (const value of forged) expect((await call('/api/teacher/me', { cookie: value })).status, value).toBe(401)
+    for (const value of forged) {
+      expect((await call('/api/teacher/me', { cookie: value })).status, value).toBe(401)
+      // The quiz routes went async with this session; they must refuse a forgery too, not fall through to 404.
+      expect((await call('/api/teacher/quizzes', { cookie: value })).status, value).toBe(401)
+    }
+    expect((await call('/api/teacher/quizzes', { cookie })).status).toBe(200)
 
     // A student cookie relabelled as a teacher one fails, even with the same secret on both portals.
     const student = (await studentCookie()).split('=')[1]
