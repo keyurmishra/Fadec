@@ -9,11 +9,12 @@
     "run_worker_first": true
   },
   "observability": { "enabled": true },
-  // The HMAC key for the signed student session cookie is deliberately not set
-  // here: local development reads STUDENT_SESSION_SECRET from the untracked
-  // .dev.vars (see .dev.vars.example), and production sets it with
-  // `wrangler secret put STUDENT_SESSION_SECRET`. Deploying without it fails
-  // closed, because the portal refuses to sign anyone in rather than guess a key.
+  // The HMAC keys for the signed student and teacher session cookies are
+  // deliberately not set here: local development reads STUDENT_SESSION_SECRET
+  // and TEACHER_SESSION_SECRET from the untracked .dev.vars (see
+  // .dev.vars.example), and production sets each with `wrangler secret put`.
+  // Deploying without one fails closed: that portal refuses to sign anyone in
+  // rather than guess a key.
   // Teaching data lives in D1. `database_id` is a local placeholder: run
   // `wrangler d1 create fadec-teacher` and paste the real id before deploying,
   // or provision the binding through Sites. Local development uses the state

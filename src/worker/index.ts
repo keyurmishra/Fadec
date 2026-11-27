@@ -74,6 +74,7 @@ import {
 import { quizzesForStudent, saveQuizAnswer, startQuizAttempt, studentAttempt, studentQuiz, submitQuizAttempt } from '../teacher/student-quizzes'
 import type { QuizReleasePolicy } from '../contracts/quizzes'
 import { clearedStudentCookie, createStudentSession, studentCookie, STUDENT_COOKIE, verifyStudentSession } from './student-session'
+import { clearedTeacherCookie, createTeacherSession, teacherCookie, TEACHER_COOKIE, verifyTeacherSession } from './teacher-session'
 
 // The Worker in front of the static site. Every form posts here and each route
 // validates its input with the same rules the browser uses. Applications,
@@ -84,6 +85,8 @@ type Env = {
   DB: D1Database
   /** HMAC key for the student session cookie. Read from .dev.vars locally, from a Worker secret in production. */
   STUDENT_SESSION_SECRET?: string
+  /** HMAC key for the teacher session cookie. Read from .dev.vars locally, from a Worker secret in production. */
+  TEACHER_SESSION_SECRET?: string
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -166,14 +169,6 @@ app.post('/api/subscribe', async (c) => {
 
 /* -------------------------- teaching studio ---------------------------- */
 
-/*
-  DEMO SESSION ONLY. The cookie holds the teacher id and is not signed, so it
-  proves nothing against a hostile client; it exists so the studio exercises
-  real 401 / 404 paths instead of trusting localStorage. Replace it with the
-  signed session cookie from contracts/auth.ts before any real deployment.
-*/
-const TEACHER_COOKIE = 'fadec_teacher'
-
 function cookieValue(header: string | null, name: string): string | null {
   if (!header) return null
   for (const part of header.split(';')) {
@@ -183,23 +178,30 @@ function cookieValue(header: string | null, name: string): string | null {
   return null
 }
 
-const teacherFrom = (c: { req: { header: (name: string) => string | undefined } }) => {
-  const id = cookieValue(c.req.header('cookie') ?? null, TEACHER_COOKIE)
-  return id ? (TEACHERS.find((t) => t.teacherId === id) ?? null) : null
+/*
+  Both portals use signed session cookies (see session-cookie.ts), so a tampered
+  id, an expired session and a cookie naming an account that no longer exists
+  all fail here and answer 401 instead of being trusted. A deployment without
+  the matching secret signs nobody in. `Secure` is added only on https so
+  loopback development still works.
+*/
+const secureRequest = (c: { req: { url: string } }) => new URL(c.req.url).protocol === 'https:'
+
+type SessionRequest = { env: Env; req: { header: (name: string) => string | undefined; url: string } }
+
+async function teacherFrom(c: SessionRequest) {
+  const secret = c.env.TEACHER_SESSION_SECRET
+  const value = cookieValue(c.req.header('cookie') ?? null, TEACHER_COOKIE)
+  if (!secret || !value) return null
+  const session = await verifyTeacherSession(secret, value)
+  if (!session) return null
+  return TEACHERS.find((t) => t.teacherId === session.teacherId) ?? null
 }
 
 const noSession = () => Response.json({ error: 'Sign in to the teaching studio to continue.' }, { status: 401 })
 const notYours = () => Response.json({ error: 'That course could not be found.' }, { status: 404 })
 
-/*
-  The student portal's session. Unlike the demo teacher cookie the value is
-  signed, so a tampered id, an expired session and a cookie naming an account
-  that no longer exists all fail here and answer 401 instead of being trusted.
-  `Secure` is added only on https so loopback development still works.
-*/
-const secureRequest = (c: { req: { url: string } }) => new URL(c.req.url).protocol === 'https:'
-
-type StudentRequest = { env: Env; req: { header: (name: string) => string | undefined; url: string } }
+type StudentRequest = SessionRequest
 
 async function studentFrom(c: StudentRequest): Promise<StudentIdentityDTO | null> {
   const secret = c.env.STUDENT_SESSION_SECRET
@@ -213,6 +215,11 @@ async function studentFrom(c: StudentRequest): Promise<StudentIdentityDTO | null
 const noStudentSession = () => Response.json({ error: 'Sign in to the student portal to continue.' }, { status: 401 })
 
 app.post('/api/teacher/signin', async (c) => {
+  const secret = c.env.TEACHER_SESSION_SECRET
+  if (!secret) {
+    console.error('TEACHER_SESSION_SECRET is not set: copy .dev.vars.example to .dev.vars locally, or run `wrangler secret put TEACHER_SESSION_SECRET`.')
+    return c.json({ error: 'Teacher sessions are not configured on this deployment.' }, 503)
+  }
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
   const errors = validateTeacherSignIn(body)
@@ -222,24 +229,25 @@ app.post('/api/teacher/signin', async (c) => {
   const teacher = TEACHERS.find((t) => t.email === email && t.teacherId === teacherId)
   // One message for both wrong-email and wrong-id: never confirm which failed.
   if (!teacher) return c.json({ error: 'Those details do not match a teacher account.' }, 401)
-  c.header('set-cookie', `${TEACHER_COOKIE}=${encodeURIComponent(teacher.teacherId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200`)
-  return c.json({ ...teacher, demo: true, expiresAt: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString() })
+  const { value, expiresAt } = await createTeacherSession(secret, teacher.teacherId)
+  c.header('set-cookie', teacherCookie(value, secureRequest(c)))
+  return c.json({ ...teacher, demo: true, expiresAt: new Date(expiresAt).toISOString() })
 })
 
 app.post('/api/teacher/signout', (c) => {
-  c.header('set-cookie', `${TEACHER_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`)
+  c.header('set-cookie', clearedTeacherCookie(secureRequest(c)))
   return c.json({ ok: true })
 })
 
-app.get('/api/teacher/me', (c) => {
-  const teacher = teacherFrom(c)
+app.get('/api/teacher/me', async (c) => {
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   return c.json(teacher)
 })
 
 /** Everything the overview screen needs, filtered to this teacher's courses. */
 app.get('/api/teacher/dashboard', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const dashboard = await dashboardForTeacher(c.env.DB, teacher.teacherId)
   if (!dashboard) return c.json({ error: 'No courses are assigned to this account yet.' }, { status: 404 })
@@ -247,7 +255,7 @@ app.get('/api/teacher/dashboard', async (c) => {
 })
 
 app.get('/api/teacher/courses', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const courses = await coursesForTeacher(c.env.DB, teacher.teacherId)
   return c.json({ items: courses, nextCursor: null, totalCount: courses.length })
@@ -255,7 +263,7 @@ app.get('/api/teacher/courses', async (c) => {
 
 /** A course belonging to another teacher answers exactly like a missing one. */
 app.get('/api/teacher/courses/:courseId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const course = await courseForTeacher(c.env.DB, teacher.teacherId, c.req.param('courseId'))
   if (!course) return notYours()
@@ -280,7 +288,7 @@ async function outlinePayload(db: D1Database, teacherId: string, courseId: strin
 const courseIdParam = (c: { req: { param: (name: string) => string } }) => c.req.param('courseId')
 
 app.get('/api/teacher/courses/:courseId/outline', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const payload = await outlinePayload(c.env.DB, teacher.teacherId, courseIdParam(c))
   if (!payload) return notYours()
@@ -288,7 +296,7 @@ app.get('/api/teacher/courses/:courseId/outline', async (c) => {
 })
 
 app.post('/api/teacher/courses/:courseId/sections', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const courseId = courseIdParam(c)
@@ -302,7 +310,7 @@ app.post('/api/teacher/courses/:courseId/sections', async (c) => {
 })
 
 app.delete('/api/teacher/courses/:courseId/sections/:sectionId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const courseId = courseIdParam(c)
@@ -312,7 +320,7 @@ app.delete('/api/teacher/courses/:courseId/sections/:sectionId', async (c) => {
 })
 
 app.post('/api/teacher/courses/:courseId/sections/:sectionId/chapters', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const courseId = courseIdParam(c)
@@ -326,7 +334,7 @@ app.post('/api/teacher/courses/:courseId/sections/:sectionId/chapters', async (c
 })
 
 app.delete('/api/teacher/courses/:courseId/chapters/:chapterId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const courseId = courseIdParam(c)
@@ -336,7 +344,7 @@ app.delete('/api/teacher/courses/:courseId/chapters/:chapterId', async (c) => {
 })
 
 app.post('/api/teacher/courses/:courseId/chapters/:chapterId/lessons', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const courseId = courseIdParam(c)
@@ -353,7 +361,7 @@ app.post('/api/teacher/courses/:courseId/chapters/:chapterId/lessons', async (c)
 })
 
 app.delete('/api/teacher/courses/:courseId/lessons/:lessonId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const courseId = courseIdParam(c)
@@ -363,7 +371,7 @@ app.delete('/api/teacher/courses/:courseId/lessons/:lessonId', async (c) => {
 })
 
 app.post('/api/teacher/courses/:courseId/reorder', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const courseId = courseIdParam(c)
@@ -379,7 +387,7 @@ app.post('/api/teacher/courses/:courseId/reorder', async (c) => {
 })
 
 app.post('/api/teacher/courses/:courseId/publish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const courseId = courseIdParam(c)
@@ -394,7 +402,7 @@ app.post('/api/teacher/courses/:courseId/publish', async (c) => {
 })
 
 app.post('/api/teacher/courses/:courseId/unpublish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const courseId = courseIdParam(c)
@@ -418,14 +426,14 @@ function parseIso(value: unknown): { ok: true; value: string | null } | { ok: fa
 
 /** Every lecture across this teacher's courses, plus the picker options. */
 app.get('/api/teacher/lectures', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const [items, courses] = await Promise.all([lecturesForTeacher(c.env.DB, teacher.teacherId), coursesForTeacher(c.env.DB, teacher.teacherId)])
   return c.json({ items, courses: courses.map((course) => ({ id: course.id, title: course.title })), totalCount: items.length })
 })
 
 app.get('/api/teacher/lectures/:lectureId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const lecture = await lectureDetail(c.env.DB, teacher.teacherId, c.req.param('lectureId'))
   if (!lecture) return lectureNotFound()
@@ -433,7 +441,7 @@ app.get('/api/teacher/lectures/:lectureId', async (c) => {
 })
 
 app.patch('/api/teacher/lectures/:lectureId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const lectureId = c.req.param('lectureId')
@@ -479,7 +487,7 @@ app.patch('/api/teacher/lectures/:lectureId', async (c) => {
 })
 
 app.post('/api/teacher/lectures/:lectureId/publish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const lectureId = c.req.param('lectureId')
@@ -492,7 +500,7 @@ app.post('/api/teacher/lectures/:lectureId/publish', async (c) => {
 })
 
 app.post('/api/teacher/lectures/:lectureId/unpublish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const lectureId = c.req.param('lectureId')
   const updated = await setLectureStatus(c.env.DB, teacher.teacherId, lectureId, 'DRAFT')
@@ -503,7 +511,7 @@ app.post('/api/teacher/lectures/:lectureId/unpublish', async (c) => {
 const RESOURCE_KINDS = ['PDF', 'SLIDES', 'DATASET', 'LINK', 'OTHER'] as const
 
 app.post('/api/teacher/lectures/:lectureId/resources', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const lectureId = c.req.param('lectureId')
@@ -527,7 +535,7 @@ app.post('/api/teacher/lectures/:lectureId/resources', async (c) => {
 })
 
 app.delete('/api/teacher/lectures/:lectureId/resources/:resourceId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const lectureId = c.req.param('lectureId')
@@ -562,14 +570,14 @@ async function courseIdsFrom(db: D1Database, teacherId: string, value: unknown):
 }
 
 app.get('/api/teacher/subjects', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const [items, courses] = await Promise.all([subjectsForTeacher(c.env.DB, teacher.teacherId), coursesForTeacher(c.env.DB, teacher.teacherId)])
   return c.json({ items, courses: courses.map((course) => ({ id: course.id, title: course.title })), totalCount: items.length })
 })
 
 app.post('/api/teacher/subjects', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const body = await readBody(c.req.raw)
@@ -590,7 +598,7 @@ app.post('/api/teacher/subjects', async (c) => {
 })
 
 app.get('/api/teacher/subjects/:subjectId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const subject = await subjectDetail(c.env.DB, teacher.teacherId, c.req.param('subjectId'))
   if (!subject) return subjectNotFound()
@@ -598,7 +606,7 @@ app.get('/api/teacher/subjects/:subjectId', async (c) => {
 })
 
 app.patch('/api/teacher/subjects/:subjectId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const subjectId = c.req.param('subjectId')
@@ -632,7 +640,7 @@ app.patch('/api/teacher/subjects/:subjectId', async (c) => {
 })
 
 app.post('/api/teacher/subjects/:subjectId/publish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const subjectId = c.req.param('subjectId')
@@ -645,7 +653,7 @@ app.post('/api/teacher/subjects/:subjectId/publish', async (c) => {
 })
 
 app.post('/api/teacher/subjects/:subjectId/unpublish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const subjectId = c.req.param('subjectId')
   const updated = await setSubjectStatus(c.env.DB, teacher.teacherId, subjectId, 'DRAFT')
@@ -654,7 +662,7 @@ app.post('/api/teacher/subjects/:subjectId/unpublish', async (c) => {
 })
 
 app.post('/api/teacher/subjects/:subjectId/topics', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const subjectId = c.req.param('subjectId')
@@ -673,7 +681,7 @@ app.post('/api/teacher/subjects/:subjectId/topics', async (c) => {
 })
 
 app.patch('/api/teacher/topics/:topicId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const topicId = c.req.param('topicId')
@@ -699,7 +707,7 @@ app.patch('/api/teacher/topics/:topicId', async (c) => {
 })
 
 app.delete('/api/teacher/topics/:topicId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const updated = await deleteTopic(c.env.DB, teacher.teacherId, c.req.param('topicId'))
   if (!updated) return topicNotFound()
@@ -707,7 +715,7 @@ app.delete('/api/teacher/topics/:topicId', async (c) => {
 })
 
 app.post('/api/teacher/topics/:topicId/lessons', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const topicId = c.req.param('topicId')
@@ -725,7 +733,7 @@ app.post('/api/teacher/topics/:topicId/lessons', async (c) => {
 })
 
 app.patch('/api/teacher/subject-lessons/:lessonId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const lessonId = c.req.param('lessonId')
@@ -751,7 +759,7 @@ app.patch('/api/teacher/subject-lessons/:lessonId', async (c) => {
 })
 
 app.delete('/api/teacher/subject-lessons/:lessonId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const updated = await deleteSyllabusLesson(c.env.DB, teacher.teacherId, c.req.param('lessonId'))
   if (!updated) return syllabusLessonNotFound()
@@ -759,7 +767,7 @@ app.delete('/api/teacher/subject-lessons/:lessonId', async (c) => {
 })
 
 app.post('/api/teacher/subjects/:subjectId/reorder', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const subjectId = c.req.param('subjectId')
@@ -779,7 +787,7 @@ app.post('/api/teacher/subjects/:subjectId/reorder', async (c) => {
 
 /** Attach an existing lecture ({ lectureId }) or create one in a course ({ courseId, kind, estimatedMinutes }). */
 app.post('/api/teacher/subject-lessons/:lessonId/lectures', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const lessonId = c.req.param('lessonId')
@@ -811,7 +819,7 @@ app.post('/api/teacher/subject-lessons/:lessonId/lectures', async (c) => {
 })
 
 app.delete('/api/teacher/subject-lessons/:lessonId/lectures/:lectureId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const updated = await detachLecture(c.env.DB, teacher.teacherId, c.req.param('lessonId'), c.req.param('lectureId'))
   if (updated.status !== 'OK') return c.json({ error: 'That lecture is not attached to this lesson.' }, 404)
@@ -835,14 +843,14 @@ function wholeNumber(value: unknown, min: number, max: number): number | null {
 
 /** Every assignment in this teacher's courses, plus the course picker. */
 app.get('/api/teacher/assignments', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const [items, courses] = await Promise.all([assignmentsForTeacher(c.env.DB, teacher.teacherId), coursesForTeacher(c.env.DB, teacher.teacherId)])
   return c.json({ items, courses: courses.map((course) => ({ id: course.id, title: course.title })), totalCount: items.length })
 })
 
 app.post('/api/teacher/assignments', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const body = await readBody(c.req.raw)
@@ -895,7 +903,7 @@ app.post('/api/teacher/assignments', async (c) => {
 })
 
 app.get('/api/teacher/assignments/:assignmentId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const assignment = await assignmentDetail(c.env.DB, teacher.teacherId, c.req.param('assignmentId'))
   if (!assignment) return assignmentNotFound()
@@ -903,7 +911,7 @@ app.get('/api/teacher/assignments/:assignmentId', async (c) => {
 })
 
 app.patch('/api/teacher/assignments/:assignmentId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const assignmentId = c.req.param('assignmentId')
@@ -961,7 +969,7 @@ app.patch('/api/teacher/assignments/:assignmentId', async (c) => {
 })
 
 app.post('/api/teacher/assignments/:assignmentId/publish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const assignmentId = c.req.param('assignmentId')
@@ -974,7 +982,7 @@ app.post('/api/teacher/assignments/:assignmentId/publish', async (c) => {
 })
 
 app.post('/api/teacher/assignments/:assignmentId/unpublish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const assignmentId = c.req.param('assignmentId')
   const updated = await setAssignmentPublished(c.env.DB, teacher.teacherId, assignmentId, false)
@@ -983,7 +991,7 @@ app.post('/api/teacher/assignments/:assignmentId/unpublish', async (c) => {
 })
 
 app.post('/api/teacher/assignments/:assignmentId/close', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const assignmentId = c.req.param('assignmentId')
   const updated = await setAssignmentClosed(c.env.DB, teacher.teacherId, assignmentId, true)
@@ -992,7 +1000,7 @@ app.post('/api/teacher/assignments/:assignmentId/close', async (c) => {
 })
 
 app.post('/api/teacher/assignments/:assignmentId/reopen', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const assignmentId = c.req.param('assignmentId')
   const updated = await setAssignmentClosed(c.env.DB, teacher.teacherId, assignmentId, false)
@@ -1002,13 +1010,13 @@ app.post('/api/teacher/assignments/:assignmentId/reopen', async (c) => {
 
 /** The marking queue: every submission in this teacher's courses. */
 app.get('/api/teacher/submissions', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   return c.json(await submissionsForTeacher(c.env.DB, teacher.teacherId))
 })
 
 app.get('/api/teacher/submissions/:submissionId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const submission = await submissionDetail(c.env.DB, teacher.teacherId, c.req.param('submissionId'))
   if (!submission) return submissionNotFound()
@@ -1017,7 +1025,7 @@ app.get('/api/teacher/submissions/:submissionId', async (c) => {
 
 /** Save draft feedback and a mark. The student sees nothing until it is published. */
 app.patch('/api/teacher/submissions/:submissionId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const submissionId = c.req.param('submissionId')
@@ -1043,7 +1051,7 @@ app.patch('/api/teacher/submissions/:submissionId', async (c) => {
 })
 
 app.post('/api/teacher/submissions/:submissionId/publish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const submissionId = c.req.param('submissionId')
@@ -1058,7 +1066,7 @@ app.post('/api/teacher/submissions/:submissionId/publish', async (c) => {
 
 /** Take a released mark back so it can be corrected. The reason is kept. */
 app.post('/api/teacher/submissions/:submissionId/withdraw', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const submissionId = c.req.param('submissionId')

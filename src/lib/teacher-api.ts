@@ -3,7 +3,7 @@
 
   Same normalisation as lib/api.ts, plus the HTTP status so the studio can tell
   an expired session (401) from a forbidden resource (403) and from a plain
-  validation failure (422). Requests are same-origin so the demo session cookie
+  validation failure (422). Requests are same-origin so the signed session cookie
   travels with them.
 */
 import { createApiClient, type ApiResult } from './api-client'

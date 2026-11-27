@@ -115,6 +115,29 @@ Teachers build quizzes at `/teach/quizzes`; students take them at
   every short answer is marked and the release rule allows it (on submit, or
   after the quiz closes).
 
+## Sessions
+
+The student portal and the teaching studio both sign their session cookies
+with HMAC-SHA256 (`src/worker/session-cookie.ts`), each with its own secret:
+
+| Secret | Used by |
+| --- | --- |
+| `STUDENT_SESSION_SECRET` | `/api/student/*` |
+| `TEACHER_SESSION_SECRET` | `/api/teacher/*` |
+
+For local development, copy `.dev.vars.example` to `.dev.vars` (if you
+already have a `.dev.vars`, add `TEACHER_SESSION_SECRET` to it). Before
+deploying, set each one as a Worker secret:
+
+```sh
+npx wrangler secret put STUDENT_SESSION_SECRET
+npx wrangler secret put TEACHER_SESSION_SECRET
+```
+
+A deployment missing a secret answers that portal's sign-in with 503 rather
+than signing with a guessable key. Changing a secret signs everyone out of that
+portal.
+
 ## Deploy with Freebuff Sites
 
 `deploy.json` already points at the build output. After `bun run build`,

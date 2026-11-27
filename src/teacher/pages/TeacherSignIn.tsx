@@ -16,9 +16,10 @@ import { validateTeacherSignIn } from '../../shared/validation'
   Teaching studio sign-in. Teachers are invite-only, so there is no application
   form here — only the credentials an operator issued.
 
-  This is a device-local demo session: the Worker sets an unsigned cookie so
-  the API can answer 401/404 honestly. It is not authentication, and the page
-  says so. Real sessions are a separate deliverable.
+  The Worker answers with a signed, HttpOnly session cookie, so the API can
+  trust who is calling. The credentials themselves are still a demo: a teacher
+  ID is not a password, and the page says so. Real credentials (invites and
+  passwords or SSO) are a separate deliverable.
 */
 const DEMO = { name: 'Capt. Naveen Rao', email: 'naveen.rao@fadec.example', teacherId: 'TCH-2011-004' }
 
@@ -100,7 +101,7 @@ export function TeacherSignIn() {
               Use the demo teacher
             </Button>
             <p className="border-t border-line pt-4 text-[12px] leading-relaxed text-muted">
-              Demo session: the studio keeps you signed in on this device only, and the API checks the session on every request. This is not production authentication.
+              Demo sign-in: your session is signed and checked on every request, but a teacher ID is not a password. This is not production authentication yet.
             </p>
           </form>
         </Card>

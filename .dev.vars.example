@@ -1,7 +1,8 @@
 # Copy to .dev.vars for local development. Wrangler reads this file and keeps it
 # out of git; deployed environments set the same names as Worker secrets.
 #
-# HMAC key for the signed student session cookie. Any local value works; a
-# production deployment without it refuses to sign students in (503) instead of
-# falling back to a guessable default.
+# HMAC keys for the signed session cookies. Any local values work; a production
+# deployment without one refuses to sign that kind of user in (503) instead of
+# falling back to a guessable default. Use a different value for each.
 STUDENT_SESSION_SECRET="local-development-only-change-me"
+TEACHER_SESSION_SECRET="local-development-only-teacher-change-me"
