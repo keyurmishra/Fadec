@@ -1,10 +1,11 @@
-import { ArrowLeft, Clock, FileText, RotateCw } from 'lucide-react'
+import { ArrowLeft, Check, ClipboardCheck, Clock, FileText, RotateCw } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router'
 
 import { Button } from '../../components/Button'
+import { Textarea } from '../../components/Field'
 import { Badge, Card, EmptyState, Skeleton } from '../../components/ui'
-import type { StudentAssignmentDetailDTO } from '../../contracts/learning'
+import type { StudentAssignmentDetailDTO, StudentAttemptDTO } from '../../contracts/learning'
 import { useDocumentTitle } from '../../lib/useDocumentTitle'
 import { studentApi } from '../../lib/student-api'
 import { LATE_POLICY_LABEL, STUDENT_ASSIGNMENT_STATUS_META, dateTimeLabel, relativeDue } from '../meta'
@@ -122,12 +123,182 @@ function Brief({ assignment }: { assignment: StudentAssignmentDetailDTO }) {
         <p className="pt-4 text-[15px] leading-relaxed whitespace-pre-line">{assignment.instructions}</p>
       </Card>
 
-      <div className="flex items-start gap-2.5 border border-line bg-surface-2 px-4 py-3 text-[13px] leading-relaxed text-muted">
-        <Clock className="mt-0.5 size-4 shrink-0" aria-hidden />
-        <p>
-          Handing in is not open in this portal yet, so there is nothing to submit here. Your teacher can still see and mark work through the teaching studio.
+      <HandIn assignment={assignment} />
+    </article>
+  )
+}
+
+/*
+  Handing in, in three steps: start an attempt, keep a draft, hand it in.
+
+  The screen holds the attempts the server returned and appends what each call
+  returns, so nothing it shows is invented on the client. Whether the work is
+  late, whether the window is open and whether an attempt is left are all the
+  server's answers; the warning below the editor reads the same due date and
+  says what the server will decide, and the refusal still comes from the Worker.
+*/
+function HandIn({ assignment }: { assignment: StudentAssignmentDetailDTO }) {
+  const [attempts, setAttempts] = useState<StudentAttemptDTO[]>(assignment.attempts)
+  const [draft, setDraft] = useState(() => assignment.attempts.find((a) => a.status === 'IN_PROGRESS')?.text ?? '')
+  const [busy, setBusy] = useState<'start' | 'save' | 'submit' | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const open = attempts.find((a) => a.status === 'IN_PROGRESS') ?? null
+  const handedIn = attempts.filter((a) => a.status === 'SUBMITTED')
+  const remaining = Math.max(0, assignment.attemptsAllowed - handedIn.length)
+  const pastDue = Date.now() > Date.parse(assignment.dueAt)
+  const accepts = assignment.latePolicy !== 'BLOCK'
+
+  const replace = (attempt: StudentAttemptDTO) =>
+    setAttempts((rows) => [attempt, ...rows.filter((row) => row.id !== attempt.id)])
+
+  async function start() {
+    setBusy('start')
+    setError(null)
+    const res = await studentApi.post<StudentAttemptDTO>(`/api/student/assignments/${encodeURIComponent(assignment.id)}/attempt`, {})
+    setBusy(null)
+    if (!res.ok) {
+      setError(res.error)
+      return
+    }
+    replace(res.data)
+    setDraft(res.data.text)
+    setNotice(`Attempt ${res.data.attemptNumber} started. Only you can see this draft until you hand it in.`)
+  }
+
+  async function save() {
+    if (!open) return
+    setBusy('save')
+    setError(null)
+    const res = await studentApi.patch<StudentAttemptDTO>(`/api/student/attempts/${encodeURIComponent(open.id)}`, { text: draft })
+    setBusy(null)
+    if (!res.ok) {
+      setError(res.error)
+      return
+    }
+    replace(res.data)
+    setNotice('Draft saved.')
+  }
+
+  async function handIn() {
+    if (!open) return
+    setBusy('submit')
+    setError(null)
+    const res = await studentApi.post<StudentAttemptDTO>(`/api/student/attempts/${encodeURIComponent(open.id)}/submit`, { text: draft })
+    setBusy(null)
+    setConfirming(false)
+    if (!res.ok) {
+      setError(res.error)
+      return
+    }
+    replace(res.data)
+    setDraft('')
+    setNotice(res.data.isLate ? 'Handed in. It is recorded as late.' : 'Handed in.')
+  }
+
+  return (
+    <Card className="p-5 md:p-6">
+      <div className="flex items-center gap-2 border-b border-line pb-3">
+        <ClipboardCheck className="size-4 text-muted" aria-hidden />
+        <h2 className="text-[15px] font-semibold">Hand in</h2>
+      </div>
+
+      <div className="flex flex-col gap-4 pt-4">
+        {open ? (
+          <p className="text-[13.5px] text-muted">
+            Attempt {open.attemptNumber} of {assignment.attemptsAllowed} · started {dateTimeLabel(open.startedAt)}. Your teacher does not see this attempt until you hand it in.
+          </p>
+        ) : assignment.status === 'SCHEDULED' ? (
+          <p className="text-[13.5px] text-muted">Hand-in opens {dateTimeLabel(assignment.opensAt)}.</p>
+        ) : assignment.status === 'CLOSED' ? (
+          <p className="text-[13.5px] text-muted">The hand-in window has closed, so no new attempt can be started.</p>
+        ) : remaining === 0 ? (
+          <p className="text-[13.5px] text-muted">You have used all {assignment.attemptsAllowed === 1 ? 'of your 1 attempt' : `${assignment.attemptsAllowed} attempts`} for this assignment.</p>
+        ) : (
+          <p className="text-[13.5px] text-muted">
+            {remaining} {remaining === 1 ? 'attempt' : 'attempts'} left.{' '}
+            {assignment.allowFileUpload ? 'This brief asks for a file, and file uploads are not built here yet, so text is all you can hand in.' : 'Write your answer here.'}
+          </p>
+        )}
+
+        {open && (
+          <>
+            <Textarea label="Your answer" value={draft} onChange={(e) => setDraft(e.target.value)} hint="Plain text. Nothing is handed in until you press the button below." />
+
+            {pastDue && (
+              <p className="flex items-start gap-2 text-[13px] text-muted">
+                <Clock className="mt-0.5 size-4 shrink-0" aria-hidden />
+                {accepts
+                  ? 'The due date has passed. Handing this in now records it as late.'
+                  : 'The due date has passed and this assignment blocks late work, so it cannot be handed in.'}
+              </p>
+            )}
+
+            {confirming ? (
+              <div className="flex flex-col gap-3 border border-line bg-surface-2 px-4 py-3.5">
+                <p className="text-[13.5px]">Handing in is final: this attempt cannot be edited afterwards. Your teacher sees it for marking straight away.</p>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="violet" loading={busy === 'submit'} onClick={handIn}>
+                    Yes, hand it in
+                  </Button>
+                  <Button variant="ghost" onClick={() => setConfirming(false)} disabled={busy === 'submit'}>
+                    Keep editing
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="secondary" loading={busy === 'save'} onClick={save} disabled={busy === 'submit'}>
+                  Save draft
+                </Button>
+                <Button variant="violet" onClick={() => setConfirming(true)} disabled={busy !== null || !draft.trim()}>
+                  Hand in for marking
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+
+        {!open && assignment.status === 'OPEN' && remaining > 0 && (
+          <div>
+            <Button loading={busy === 'start'} onClick={start}>
+              {handedIn.length ? `Start attempt ${handedIn.length + 1}` : 'Start attempt'}
+            </Button>
+          </div>
+        )}
+
+        {handedIn.length > 0 && (
+          <ul className="flex flex-col gap-px border border-line bg-line">
+            {handedIn.map((attempt) => (
+              <li key={attempt.id} className="flex flex-wrap items-center justify-between gap-2 bg-surface px-4 py-3">
+                <span className="text-[13px] text-muted">
+                  Attempt {attempt.attemptNumber} · handed in {attempt.submittedAt ? dateTimeLabel(attempt.submittedAt) : ''}
+                </span>
+                <Badge tone={attempt.isLate ? 'amber' : 'lime'}>{attempt.isLate ? 'Late' : 'On time'}</Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {error && (
+          <div role="alert" className="flex flex-col items-start gap-3 border border-[rgb(160_48_36/0.25)] bg-danger-soft px-4 py-3 text-[14px] text-danger">
+            <span>{error}</span>
+          </div>
+        )}
+
+        {notice && (
+          <p className="flex items-center gap-2 text-[13px] text-lime-ink" role="status">
+            <Check className="size-4 shrink-0" aria-hidden />
+            {notice}
+          </p>
+        )}
+
+        <p className="border-t border-line pt-3 text-[12.5px] leading-relaxed text-muted">
+          Your teacher marks handed-in work in the teaching studio. Marks and feedback are not shown in this portal yet.
         </p>
       </div>
-    </article>
+    </Card>
   )
 }

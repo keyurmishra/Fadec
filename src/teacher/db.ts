@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS assignment_submissions (
   student_user_id TEXT NOT NULL,
   student_name TEXT NOT NULL,
   attempt_number INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'SUBMITTED',
   submitted_at TEXT NOT NULL,
   is_late INTEGER NOT NULL DEFAULT 0,
   answer_text TEXT,
@@ -249,6 +250,15 @@ const SCHEMA_STATEMENTS = SCHEMA.split(';')
 const MIGRATIONS = [
   `ALTER TABLE students ADD COLUMN student_no TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS students_by_number ON students(student_no)`,
+  /* Rows written before the hand-in path existed were already handed in. */
+  `ALTER TABLE assignment_submissions ADD COLUMN status TEXT NOT NULL DEFAULT 'SUBMITTED'`,
+  /*
+    One open attempt per student and assignment, enforced by the database rather
+    than by the read-then-insert in startAttempt: two tabs starting at the same
+    moment both see no draft, and only this index stops the second insert. A
+    partial index leaves handed-in attempts alone, so a resit is still allowed.
+  */
+  `CREATE UNIQUE INDEX IF NOT EXISTS one_open_attempt ON assignment_submissions(assignment_id, student_user_id) WHERE status = 'IN_PROGRESS'`,
 ]
 
 let ready: Promise<void> | null = null

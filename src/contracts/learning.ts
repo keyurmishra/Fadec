@@ -102,8 +102,30 @@ export type StudentAssignmentSummaryDTO = {
   publishedAt: IsoDateTime
 }
 
+/**
+ * The student's own attempt. IN_PROGRESS is the one they can still edit;
+ * SUBMITTED is final and is what the teacher's marking queue sees.
+ */
+export type StudentAttemptStatus = 'IN_PROGRESS' | 'SUBMITTED'
+
+export type StudentAttemptDTO = {
+  id: Id
+  assignmentId: Id
+  /** 1-based; a student's earlier attempts stay readable. */
+  attemptNumber: number
+  status: StudentAttemptStatus
+  text: string
+  startedAt: IsoDateTime
+  /** Null while the attempt is still being written. */
+  submittedAt: IsoDateTime | null
+  /** Decided against the due date on the server, never by the client. */
+  isLate: boolean
+}
+
 export type StudentAssignmentDetailDTO = StudentAssignmentSummaryDTO & {
   instructions: string
+  /** Newest first; the page derives what is left to hand in from this. */
+  attempts: StudentAttemptDTO[]
 }
 
 /** Client → server progress ping. The server may reject impossible jumps. */

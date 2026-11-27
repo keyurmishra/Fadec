@@ -19,7 +19,7 @@ import {
   type AssignmentPatch,
 } from '../teacher/assignments'
 import { ensureDatabase } from '../teacher/db'
-import { assignmentsForStudent, studentAssignment } from '../teacher/student-assignments'
+import { assignmentsForStudent, MAX_ANSWER_LENGTH, saveAttempt, startAttempt, studentAssignment, submitAttempt } from '../teacher/student-assignments'
 import { addChapter, addLesson, addSection, deleteChapter, deleteLesson, deleteSection, move, outlineFor, publishValidation } from '../teacher/curriculum'
 import { courseForTeacher, coursesForTeacher, setCourseStatus } from '../teacher/courses'
 import { dashboardForTeacher, TEACHERS } from '../teacher/fixtures'
@@ -1117,6 +1117,70 @@ app.get('/api/student/assignments/:assignmentId', async (c) => {
   if (!assignment) return c.json({ error: 'That assignment could not be found.' }, 404)
   c.header('cache-control', 'no-store')
   return c.json(assignment)
+})
+
+/*
+  Handing in. Starting is idempotent by design: the same call resumes the open
+  attempt, so a reload or a second tab cannot create a second draft. Lateness,
+  the attempt count and whether the window is open are all decided inside the
+  store from rows it reads itself, not from the request body.
+*/
+const attemptNotFound = () => Response.json({ error: 'That attempt could not be found.' }, { status: 404 })
+
+/** The answer body, or null when the field is not text at all. */
+const answerText = (value: unknown): string | null => (typeof value === 'string' ? value : null)
+
+const answerTooLong = () => invalid({ text: `Keep your answer under ${MAX_ANSWER_LENGTH.toLocaleString('en-GB')} characters.` })
+
+app.post('/api/student/assignments/:assignmentId/attempt', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  const result = await startAttempt(c.env.DB, student, c.req.param('assignmentId'))
+  c.header('cache-control', 'no-store')
+  if (result.status === 'NOT_FOUND') return c.json({ error: 'That assignment could not be found.' }, 404)
+  if (result.status === 'NOT_OPEN') return c.json({ error: 'This assignment is not open for hand-in right now.' }, 409)
+  if (result.status === 'EXHAUSTED') return c.json({ error: 'You have used every attempt for this assignment.' }, 409)
+  return c.json(result.attempt)
+})
+
+/** Save the draft. Nothing reaches the teacher until the attempt is handed in. */
+app.patch('/api/student/attempts/:attemptId', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+  const text = answerText(body.text)
+  if (text === null) return invalid({ text: 'Send your answer as plain text.' })
+
+  const result = await saveAttempt(c.env.DB, student.id, c.req.param('attemptId'), text)
+  c.header('cache-control', 'no-store')
+  if (result.status === 'NOT_FOUND') return attemptNotFound()
+  if (result.status === 'ALREADY_SUBMITTED') return c.json({ error: 'That attempt has already been handed in.' }, 409)
+  if (result.status === 'TOO_LONG') return answerTooLong()
+  return c.json(result.attempt)
+})
+
+/**
+ * Hand the attempt in. The text is stored with the submission in the same
+ * update, so a student who types and submits in one go does not have to save
+ * the draft first.
+*/
+app.post('/api/student/attempts/:attemptId/submit', async (c) => {
+  const student = await studentFrom(c)
+  if (!student) return noStudentSession()
+  const body = await readBody(c.req.raw)
+  if (!body) return badJson()
+  const text = answerText(body.text)
+  if (text === null) return invalid({ text: 'Send your answer as plain text.' })
+
+  const result = await submitAttempt(c.env.DB, student.id, c.req.param('attemptId'), text)
+  c.header('cache-control', 'no-store')
+  if (result.status === 'NOT_FOUND') return attemptNotFound()
+  if (result.status === 'ALREADY_SUBMITTED') return c.json({ error: 'That attempt has already been handed in.' }, 409)
+  if (result.status === 'LATE_BLOCKED') return c.json({ error: 'This assignment does not accept work after its due date.' }, 409)
+  if (result.status === 'EMPTY') return invalid({ text: 'Write your answer before handing in.' })
+  if (result.status === 'TOO_LONG') return answerTooLong()
+  return c.json(result.attempt)
 })
 
 /* -------------------------- student catalogue --------------------------- */

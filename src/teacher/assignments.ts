@@ -76,11 +76,11 @@ type SubmissionRow = {
 const SELECT_ASSIGNMENT = `
   SELECT a.*, c.title AS course_title,
          (SELECT COUNT(*) FROM course_enrolments e WHERE e.course_id = c.id AND e.status = 'ACTIVE') AS enrolled_count,
-         (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id) AS submission_count,
-         (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.published_at IS NULL AND s.score IS NULL) AS pending_count,
-         (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.published_at IS NULL AND s.score IS NOT NULL) AS draft_count,
-         (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.published_at IS NOT NULL) AS graded_count,
-         (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.is_late = 1) AS late_count
+         (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.status = 'SUBMITTED') AS submission_count,
+         (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.status = 'SUBMITTED' AND s.published_at IS NULL AND s.score IS NULL) AS pending_count,
+         (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.status = 'SUBMITTED' AND s.published_at IS NULL AND s.score IS NOT NULL) AS draft_count,
+         (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.status = 'SUBMITTED' AND s.published_at IS NOT NULL) AS graded_count,
+         (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.status = 'SUBMITTED' AND s.is_late = 1) AS late_count
   FROM assignments a
   JOIN courses c ON c.id = a.course_id`
 
@@ -182,7 +182,7 @@ async function assignmentRow(db: Db, teacherId: string, assignmentId: string): P
 async function submissionRows(db: Db, assignmentId: string): Promise<SubmissionRow[]> {
   return query<SubmissionRow>(
     db,
-    `${SELECT_SUBMISSION} WHERE s.assignment_id = ?1
+    `${SELECT_SUBMISSION} WHERE s.assignment_id = ?1 AND s.status = 'SUBMITTED'
      ORDER BY CASE WHEN s.published_at IS NULL THEN 0 ELSE 1 END, s.submitted_at DESC`,
     assignmentId,
   )
@@ -206,7 +206,7 @@ export async function submissionsForTeacher(db: Db, teacherId: string): Promise<
   const [rows, assignments] = await Promise.all([
     query<SubmissionRow>(
       db,
-      `${SELECT_SUBMISSION} WHERE c.instructor_id = ?1
+      `${SELECT_SUBMISSION} WHERE c.instructor_id = ?1 AND s.status = 'SUBMITTED'
        ORDER BY CASE WHEN s.published_at IS NULL THEN 0 ELSE 1 END, s.submitted_at DESC`,
       teacherId,
     ),
@@ -226,7 +226,7 @@ export async function submissionsForTeacher(db: Db, teacherId: string): Promise<
 }
 
 export async function submissionDetail(db: Db, teacherId: string, submissionId: string): Promise<TeacherSubmissionDetailDTO | null> {
-  const row = await queryOne<SubmissionRow>(db, `${SELECT_SUBMISSION} WHERE s.id = ?1 AND c.instructor_id = ?2`, submissionId, teacherId)
+  const row = await queryOne<SubmissionRow>(db, `${SELECT_SUBMISSION} WHERE s.id = ?1 AND c.instructor_id = ?2 AND s.status = 'SUBMITTED'`, submissionId, teacherId)
   if (!row) return null
 
   const revisions = await query<{ at: string; action: TeacherSubmissionDetailDTO['revisions'][number]['action']; previous_score: number | null; new_score: number | null; reason: string | null }>(
@@ -342,7 +342,7 @@ export async function setAssignmentClosed(db: Db, teacherId: string, assignmentI
 type GradeInput = { score: number | null; feedback: string }
 
 async function ownedSubmission(db: Db, teacherId: string, submissionId: string): Promise<SubmissionRow | null> {
-  return queryOne<SubmissionRow>(db, `${SELECT_SUBMISSION} WHERE s.id = ?1 AND c.instructor_id = ?2`, submissionId, teacherId)
+  return queryOne<SubmissionRow>(db, `${SELECT_SUBMISSION} WHERE s.id = ?1 AND c.instructor_id = ?2 AND s.status = 'SUBMITTED'`, submissionId, teacherId)
 }
 
 async function recordRevision(
@@ -439,14 +439,14 @@ export async function assessmentDigest(db: Db, teacherId: string): Promise<Asses
       teacherId,
       now,
     ),
-    query<SubmissionRow>(db, `${SELECT_SUBMISSION} WHERE c.instructor_id = ?1 ORDER BY s.submitted_at DESC LIMIT 5`, teacherId),
+    query<SubmissionRow>(db, `${SELECT_SUBMISSION} WHERE c.instructor_id = ?1 AND s.status = 'SUBMITTED' ORDER BY s.submitted_at DESC LIMIT 5`, teacherId),
     queryOne<{ pending: number; late: number }>(
       db,
       `SELECT COUNT(*) AS pending, SUM(CASE WHEN s.is_late = 1 THEN 1 ELSE 0 END) AS late
        FROM assignment_submissions s
        JOIN assignments a ON a.id = s.assignment_id
        JOIN courses c ON c.id = a.course_id
-       WHERE c.instructor_id = ?1 AND s.published_at IS NULL AND s.score IS NULL`,
+       WHERE c.instructor_id = ?1 AND s.status = 'SUBMITTED' AND s.published_at IS NULL AND s.score IS NULL`,
       teacherId,
     ),
   ])

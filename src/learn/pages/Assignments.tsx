@@ -14,8 +14,8 @@ import { LATE_POLICY_LABEL, STUDENT_ASSIGNMENT_STATUS_META, dateTimeLabel, relat
 
   The list is grouped by the state of its window rather than filtered: what is
   open now comes first, what is coming next after it, and closed work stays
-  readable at the bottom. All of it is read-only for now — handing in is the
-  next slice, and the page says so instead of showing a button that does nothing.
+  readable at the bottom. The list stays a brief; handing in happens on the
+  assignment's own page.
 */
 type Load = { status: 'loading' } | { status: 'ready'; items: StudentAssignmentSummaryDTO[] } | { status: 'error'; error: string; code: number }
 
@@ -51,7 +51,7 @@ export function StudentAssignments() {
           <p className="text-[11px] font-semibold tracking-[0.16em] text-amber-ink uppercase">Assignments</p>
           <h1 className="font-display text-[32px] leading-[1.05] tracking-[-0.015em] md:text-[40px]">What you have been set</h1>
           <p className="text-[14.5px] leading-relaxed text-muted">
-            Everything published for your enrolled courses. Handing in, files and marks are not part of this portal yet, so this page is a read-only brief.
+            Everything published for your enrolled courses. Open one to write your answer and hand it in; files and marks are not part of this portal yet.
           </p>
         </div>
         {state.status === 'error' && (
