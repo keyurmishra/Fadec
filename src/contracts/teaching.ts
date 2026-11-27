@@ -23,7 +23,7 @@ export type TeacherIdentityDTO = {
 
 /** Session returned by `POST /api/teacher/signin`. */
 export type TeacherSessionDTO = TeacherIdentityDTO & {
-  /** Demo session only: replaced by a real session cookie when auth lands. */
+  /** True while sign-in is email plus teacher ID with no password; the session cookie itself is signed. */
   demo: boolean
   expiresAt: IsoDateTime
 }
