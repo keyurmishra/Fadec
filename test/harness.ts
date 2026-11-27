@@ -12,6 +12,7 @@ import { afterAll } from 'vitest'
 import app from '../src/worker/index'
 
 export const SESSION_SECRET = 'test-only-session-secret'
+export const TEACHER_SECRET = 'test-only-teacher-session-secret'
 
 // Bindings from wrangler.jsonc, held in memory only: nothing is written to .wrangler/.
 const proxy = await getPlatformProxy<{ DB: D1Database }>({ persist: false, envFiles: [] })
@@ -20,25 +21,26 @@ afterAll(() => proxy.dispose())
 
 const assets = { fetch: async () => new Response('asset', { status: 200 }) } as unknown as Fetcher
 
-let env: { ASSETS: Fetcher; DB: D1Database; STUDENT_SESSION_SECRET?: string } | null = null
+let env: { ASSETS: Fetcher; DB: D1Database; STUDENT_SESSION_SECRET?: string; TEACHER_SESSION_SECRET?: string } | null = null
 
 async function getEnv() {
-  if (!env) env = { ASSETS: assets, DB: proxy.env.DB, STUDENT_SESSION_SECRET: SESSION_SECRET }
+  if (!env) env = { ASSETS: assets, DB: proxy.env.DB, STUDENT_SESSION_SECRET: SESSION_SECRET, TEACHER_SESSION_SECRET: TEACHER_SECRET }
   return env
 }
 
-type CallOptions = { method?: string; body?: unknown; rawBody?: string; cookie?: string; secret?: string | null }
+type CallOptions = { method?: string; body?: unknown; rawBody?: string; cookie?: string; secret?: string | null; teacherSecret?: string | null; contentType?: string }
 
 /** Sends one request through the app and returns the status, headers and parsed JSON. */
-export async function call(path: string, { method, body, rawBody, cookie, secret }: CallOptions = {}) {
+export async function call(path: string, { method, body, rawBody, cookie, secret, teacherSecret, contentType }: CallOptions = {}) {
   const base = await getEnv()
-  const bindings = secret === undefined ? base : { ...base, STUDENT_SESSION_SECRET: secret ?? undefined }
+  let bindings = secret === undefined ? base : { ...base, STUDENT_SESSION_SECRET: secret ?? undefined }
+  if (teacherSecret !== undefined) bindings = { ...bindings, TEACHER_SESSION_SECRET: teacherSecret ?? undefined }
   const headers = new Headers()
   if (cookie) headers.set('cookie', cookie)
   let payload: string | undefined
   if (rawBody !== undefined) payload = rawBody
   else if (body !== undefined) payload = JSON.stringify(body)
-  if (payload !== undefined) headers.set('content-type', 'application/json')
+  if (payload !== undefined) headers.set('content-type', contentType ?? 'application/json')
   const res = await app.fetch(
     new Request(`http://localhost${path}`, { method: method ?? (payload !== undefined ? 'POST' : 'GET'), headers, body: payload }),
     bindings,

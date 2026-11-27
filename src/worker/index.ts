@@ -1150,14 +1150,14 @@ function quizFieldsFrom(body: Record<string, unknown>): { ok: true; patch: QuizP
 
 /** Every quiz in this teacher's courses, plus the course picker. */
 app.get('/api/teacher/quizzes', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const [items, courses] = await Promise.all([quizzesForTeacher(c.env.DB, teacher.teacherId), coursesForTeacher(c.env.DB, teacher.teacherId)])
   return c.json({ items, courses: courses.map((course) => ({ id: course.id, title: course.title })), totalCount: items.length })
 })
 
 app.post('/api/teacher/quizzes', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const body = await readBody(c.req.raw)
@@ -1191,7 +1191,7 @@ app.post('/api/teacher/quizzes', async (c) => {
 })
 
 app.get('/api/teacher/quizzes/:quizId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const quiz = await quizDetail(c.env.DB, teacher.teacherId, c.req.param('quizId'))
   if (!quiz) return quizNotFound()
@@ -1199,7 +1199,7 @@ app.get('/api/teacher/quizzes/:quizId', async (c) => {
 })
 
 app.patch('/api/teacher/quizzes/:quizId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const quizId = c.req.param('quizId')
@@ -1221,7 +1221,7 @@ app.patch('/api/teacher/quizzes/:quizId', async (c) => {
 })
 
 app.post('/api/teacher/quizzes/:quizId/publish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const result = await setQuizPublished(c.env.DB, teacher.teacherId, c.req.param('quizId'), true)
   if (result.status === 'NOT_FOUND') return quizNotFound()
@@ -1231,7 +1231,7 @@ app.post('/api/teacher/quizzes/:quizId/publish', async (c) => {
 })
 
 app.post('/api/teacher/quizzes/:quizId/unpublish', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const result = await setQuizPublished(c.env.DB, teacher.teacherId, c.req.param('quizId'), false)
   if (result.status === 'NOT_FOUND') return quizNotFound()
@@ -1241,7 +1241,7 @@ app.post('/api/teacher/quizzes/:quizId/unpublish', async (c) => {
 })
 
 app.post('/api/teacher/quizzes/:quizId/close', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const updated = await setQuizClosed(c.env.DB, teacher.teacherId, c.req.param('quizId'), true)
   if (!updated) return quizNotFound()
@@ -1249,7 +1249,7 @@ app.post('/api/teacher/quizzes/:quizId/close', async (c) => {
 })
 
 app.post('/api/teacher/quizzes/:quizId/reopen', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const updated = await setQuizClosed(c.env.DB, teacher.teacherId, c.req.param('quizId'), false)
   if (!updated) return quizNotFound()
@@ -1257,7 +1257,7 @@ app.post('/api/teacher/quizzes/:quizId/reopen', async (c) => {
 })
 
 app.post('/api/teacher/quizzes/:quizId/questions', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const db = c.env.DB
   const quizId = c.req.param('quizId')
@@ -1270,7 +1270,7 @@ app.post('/api/teacher/quizzes/:quizId/questions', async (c) => {
 })
 
 app.put('/api/teacher/quiz-questions/:questionId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
@@ -1280,13 +1280,13 @@ app.put('/api/teacher/quiz-questions/:questionId', async (c) => {
 })
 
 app.delete('/api/teacher/quiz-questions/:questionId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   return questionResponse(await deleteQuestion(c.env.DB, teacher.teacherId, c.req.param('questionId')))
 })
 
 app.post('/api/teacher/quiz-questions/:questionId/move', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()
@@ -1296,7 +1296,7 @@ app.post('/api/teacher/quiz-questions/:questionId/move', async (c) => {
 })
 
 app.get('/api/teacher/quiz-attempts/:attemptId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const attempt = await quizAttemptDetail(c.env.DB, teacher.teacherId, c.req.param('attemptId'))
   if (!attempt) return quizAttemptNotFound()
@@ -1305,7 +1305,7 @@ app.get('/api/teacher/quiz-attempts/:attemptId', async (c) => {
 
 /** Mark one short answer: { points, comment }. Changing a mark already given is allowed. */
 app.put('/api/teacher/quiz-attempts/:attemptId/answers/:questionId', async (c) => {
-  const teacher = teacherFrom(c)
+  const teacher = await teacherFrom(c)
   if (!teacher) return noSession()
   const body = await readBody(c.req.raw)
   if (!body) return badJson()

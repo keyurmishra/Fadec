@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { call, cookieFrom, OTHER_TEACHER, TEACHER, teacherCookie } from './harness'
+import { call, cookieFrom, OTHER_TEACHER, studentCookie, TEACHER, teacherCookie } from './harness'
 
 describe('teacher session', () => {
   it('validates the sign-in shape before looking anyone up', async () => {
@@ -35,6 +35,33 @@ describe('teacher session', () => {
       expect(res.status, path).toBe(401)
     }
     expect((await call('/api/teacher/me', { cookie: 'fadec_teacher=TCH-0000-000' })).status).toBe(401)
+  })
+
+  it('refuses to sign a teacher in when no teacher secret is configured', async () => {
+    const res = await call('/api/teacher/signin', { body: TEACHER, teacherSecret: null })
+    expect(res.status).toBe(503)
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('rejects forged, tampered and cross-portal teacher cookies', async () => {
+    const cookie = await teacherCookie()
+    expect(cookie).toMatch(/^fadec_teacher=v1\.TCH-2011-004\.\d+\.[0-9a-f]{64}$/)
+    const [, , expiry, signature] = cookie.split('=')[1].split('.')
+
+    // The old demo cookie was a bare teacher id: writing one must no longer work.
+    const forged = [
+      'fadec_teacher=TCH-2011-004',
+      `fadec_teacher=v1.TCH-2015-011.${expiry}.${signature}`,
+      `fadec_teacher=v1.TCH-2011-004.${Number(expiry) + 1}.${signature}`,
+      'fadec_teacher=v1.TCH-2011-004.9999999999999.00',
+    ]
+    for (const value of forged) expect((await call('/api/teacher/me', { cookie: value })).status, value).toBe(401)
+
+    // A student cookie relabelled as a teacher one fails, even with the same secret on both portals.
+    const student = (await studentCookie()).split('=')[1]
+    expect((await call('/api/teacher/me', { cookie: `fadec_teacher=${student}` })).status).toBe(401)
+    expect((await call('/api/teacher/me', { cookie, teacherSecret: 'some-other-secret' })).status).toBe(401)
+    expect((await call('/api/teacher/me', { cookie })).status).toBe(200)
   })
 
   it('clears the cookie on sign-out', async () => {
