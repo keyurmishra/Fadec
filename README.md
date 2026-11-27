@@ -26,7 +26,13 @@ bun install
 bun run dev        # Vite + the Worker in workerd
 bun run build      # dist/client (assets) + dist/e_learning/index.js (Worker)
 bun run typecheck
+bun run test       # Vitest: Worker API routes against an in-memory D1
 ```
+
+The tests in `test/` call the Hono app directly with a D1 binding from
+Wrangler's platform proxy (in memory, nothing written to `.wrangler/`), so they
+run the real SQL and the real seed. GitHub Actions (`.github/workflows/ci.yml`)
+runs typecheck, build and tests on every push to `main` and on pull requests.
 
 ## Edit it
 
