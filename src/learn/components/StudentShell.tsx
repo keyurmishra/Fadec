@@ -19,6 +19,11 @@ import { STUDENT_SIGN_IN, studentApi } from '../../lib/student-api'
   cannot explain, and every API route re-checks the cookie anyway — this guard
   is a redirect, not the security boundary.
 */
+const PORTAL_NAV = [
+  { to: '/learn/assignments', label: 'Assignments' },
+  { to: '/learn/quizzes', label: 'Quizzes' },
+] as const
+
 const StudentContext = createContext<StudentIdentityDTO | null>(null)
 
 /** The signed-in student, available to every page under the shell. */
@@ -82,24 +87,26 @@ export function StudentShell() {
         </div>
         <nav aria-label="Student portal sections" className="mx-auto w-full max-w-[1100px] px-5 md:px-8">
           <ul className="flex gap-1">
-            <li>
-              <NavLink
-                to="/learn/assignments"
-                className={({ isActive }) =>
-                  cx(
-                    'relative inline-flex h-11 items-center px-3 text-[13.5px] font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-amber-deep',
-                    isActive ? 'text-fg' : 'text-muted hover:text-fg',
-                  )
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    Assignments
-                    {isActive && <span className="absolute inset-x-2 -bottom-px h-0.5 bg-amber-deep" aria-hidden />}
-                  </>
-                )}
-              </NavLink>
-            </li>
+            {PORTAL_NAV.map((item) => (
+              <li key={item.to}>
+                <NavLink
+                  to={item.to}
+                  className={({ isActive }) =>
+                    cx(
+                      'relative inline-flex h-11 items-center px-3 text-[13.5px] font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-amber-deep',
+                      isActive ? 'text-fg' : 'text-muted hover:text-fg',
+                    )
+                  }
+                >
+                  {({ isActive }) => (
+                    <>
+                      {item.label}
+                      {isActive && <span className="absolute inset-x-2 -bottom-px h-0.5 bg-amber-deep" aria-hidden />}
+                    </>
+                  )}
+                </NavLink>
+              </li>
+            ))}
           </ul>
         </nav>
       </header>

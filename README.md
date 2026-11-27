@@ -91,6 +91,24 @@ Before deploying, create the real database and paste its id into
 npx wrangler d1 create fadec-teacher
 ```
 
+## Quizzes
+
+Teachers build quizzes at `/teach/quizzes`; students take them at
+`/learn/quizzes`. The tables (`quizzes`, `quiz_questions`, `quiz_attempts`,
+`quiz_answers`) are created by `ensureDatabase` like the rest of the schema.
+
+- `src/teacher/quizzes.ts` is the studio store: settings, questions (editable
+  only while the quiz is a draft), publishing, scoring and short-answer marking.
+- `src/teacher/student-quizzes.ts` is the portal store: starting or resuming an
+  attempt, autosaving one answer at a time, and handing in.
+- An attempt freezes its questions in `snapshot_json`, so later edits never
+  change a mark. Its deadline (`expires_at`) is set by the server; an overdue
+  attempt is handed in with its saved answers on the next read.
+- Single choice, multiple choice (all or nothing) and true/false are scored on
+  submit. Short answers wait for the teacher. A student sees a score only once
+  every short answer is marked and the release rule allows it (on submit, or
+  after the quiz closes).
+
 ## Deploy with Freebuff Sites
 
 `deploy.json` already points at the build output. After `bun run build`,

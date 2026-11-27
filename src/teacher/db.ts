@@ -182,6 +182,85 @@ CREATE TABLE IF NOT EXISTS submission_revisions (
 );
 CREATE INDEX IF NOT EXISTS revisions_by_submission ON submission_revisions(submission_id, at);
 
+/* Quizzes. A quiz is a draft until published_at is set, and status holds only
+   a manual close, exactly like assignments. Options and the answer key are JSON
+   on the question row: they are always read and written with the question, and
+   an attempt freezes its own copy anyway. */
+CREATE TABLE IF NOT EXISTS quizzes (
+  id TEXT PRIMARY KEY,
+  course_id TEXT NOT NULL REFERENCES courses(id),
+  title TEXT NOT NULL,
+  instructions TEXT NOT NULL DEFAULT '',
+  opens_at TEXT NOT NULL,
+  closes_at TEXT NOT NULL,
+  duration_minutes INTEGER NOT NULL DEFAULT 30,
+  attempts_allowed INTEGER NOT NULL DEFAULT 1,
+  pass_percent INTEGER NOT NULL DEFAULT 50,
+  release_policy TEXT NOT NULL DEFAULT 'IMMEDIATE',
+  shuffle_questions INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'OPEN',
+  published_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS quizzes_by_course ON quizzes(course_id, closes_at);
+
+CREATE TABLE IF NOT EXISTS quiz_questions (
+  id TEXT PRIMARY KEY,
+  quiz_id TEXT NOT NULL REFERENCES quizzes(id),
+  position INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  points INTEGER NOT NULL DEFAULT 1,
+  options_json TEXT NOT NULL DEFAULT '[]',
+  correct_json TEXT NOT NULL DEFAULT '[]',
+  model_answer TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS questions_by_quiz ON quiz_questions(quiz_id, position);
+
+/* An attempt keeps the questions it delivered, key included, in snapshot_json.
+   Scoring and review read the snapshot, never the live quiz, so nothing a
+   teacher does later changes a mark already given. expires_at is the server's
+   deadline: the start time plus the duration, cut short by the closing time. */
+CREATE TABLE IF NOT EXISTS quiz_attempts (
+  id TEXT PRIMARY KEY,
+  quiz_id TEXT NOT NULL REFERENCES quizzes(id),
+  student_id TEXT NOT NULL REFERENCES students(id),
+  student_name TEXT NOT NULL,
+  attempt_number INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'IN_PROGRESS',
+  started_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  submitted_at TEXT,
+  auto_submitted INTEGER NOT NULL DEFAULT 0,
+  snapshot_json TEXT NOT NULL,
+  score INTEGER,
+  max_score INTEGER NOT NULL,
+  needs_marking INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS quiz_attempts_by_quiz ON quiz_attempts(quiz_id, submitted_at);
+CREATE INDEX IF NOT EXISTS quiz_attempts_by_student ON quiz_attempts(student_id, quiz_id);
+CREATE UNIQUE INDEX IF NOT EXISTS one_open_quiz_attempt ON quiz_attempts(quiz_id, student_id) WHERE status = 'IN_PROGRESS';
+
+/* One row per answered question, written by autosave. awarded_points stays
+   null on a short answer until a teacher marks it. */
+CREATE TABLE IF NOT EXISTS quiz_answers (
+  attempt_id TEXT NOT NULL REFERENCES quiz_attempts(id),
+  question_id TEXT NOT NULL,
+  value_json TEXT NOT NULL,
+  awarded_points INTEGER,
+  is_correct INTEGER,
+  comment TEXT NOT NULL DEFAULT '',
+  saved_at TEXT NOT NULL,
+  marked_by TEXT,
+  marked_at TEXT,
+  PRIMARY KEY (attempt_id, question_id)
+);
+
 CREATE TABLE IF NOT EXISTS subjects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
