@@ -8,7 +8,7 @@ import { Badge, Card, Chip, EmptyState, Skeleton, type Tone } from '../../compon
 import type { LectureAvailabilityStatus, TeacherLectureSummaryDTO } from '../../contracts/teaching'
 import { teacherApi } from '../../lib/teacher-api'
 import { useDocumentTitle } from '../../lib/useDocumentTitle'
-import { PageHeader, ProgressBar } from '../components/ui'
+import { NotTracked, PageHeader, ProgressBar } from '../components/ui'
 
 /*
   Lectures & Videos: every lecture in the teacher's courses in curriculum order.
@@ -21,7 +21,7 @@ type Load =
   | { status: 'error'; error: string; code: number }
 
 type StatusFilter = 'ALL' | 'PUBLISHED' | 'DRAFT' | 'SCHEDULED'
-type Sort = 'curriculum' | 'title' | 'watch'
+type Sort = 'curriculum' | 'title'
 
 const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: 'ALL', label: 'All' },
@@ -33,8 +33,10 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
 const SORTS: { value: Sort; label: string }[] = [
   { value: 'curriculum', label: 'Curriculum order' },
   { value: 'title', label: 'Title A–Z' },
-  { value: 'watch', label: 'Watch completion' },
 ]
+
+/** Why a watch column is empty, shown on hover. */
+const WATCH_NOT_TRACKED = 'Students cannot play lectures in the portal yet, so no viewing is recorded.'
 
 const MEDIA_META: Record<TeacherLectureSummaryDTO['mediaStatus'], { label: string; tone: Tone }> = {
   READY: { label: 'Ready', tone: 'lime' },
@@ -85,21 +87,19 @@ export function TeacherLectures() {
       .filter((l) => !q || l.title.toLowerCase().includes(q) || l.chapterTitle.toLowerCase().includes(q) || l.courseTitle.toLowerCase().includes(q))
     return list.slice().sort((a, b) => {
       if (sort === 'title') return a.title.localeCompare(b.title)
-      if (sort === 'watch') return b.watchCompletionPercent - a.watchCompletionPercent
       return 0
     })
   }, [lectures, course, status, query, sort])
 
   const countFor = (value: StatusFilter) => lectures.filter((l) => matchesStatus(l, value)).length
   const published = lectures.filter((l) => l.status === 'PUBLISHED').length
-  const averageWatch = published ? Math.round(lectures.filter((l) => l.status === 'PUBLISHED').reduce((n, l) => n + l.watchCompletionPercent, 0) / published) : 0
 
   return (
     <section className="flex flex-col gap-7">
       <PageHeader
         eyebrow="Teaching studio"
         title="Lectures & Videos"
-        description="Every lecture, its video state, resources and viewing numbers. Open one to edit it, attach resources or schedule when students can see it."
+        description="Every lecture, its video state and resources. Open one to edit it, attach resources or schedule when students can see it."
         actions={
           <Button to="/teach/courses" variant="secondary">
             Go to courses
@@ -113,7 +113,7 @@ export function TeacherLectures() {
             { k: 'Lectures', v: String(lectures.length) },
             { k: 'Published', v: String(published) },
             { k: 'Drafts', v: String(lectures.length - published) },
-            { k: 'Mean watch completion', v: `${averageWatch}%` },
+            { k: 'Resources attached', v: String(lectures.reduce((n, l) => n + l.resourceCount, 0)) },
           ].map((s) => (
             <div key={s.k} className="flex flex-col gap-1 border border-line bg-surface px-4 py-3">
               <dt className="text-[11.5px] text-muted">{s.k}</dt>
@@ -251,7 +251,7 @@ export function TeacherLectures() {
                     </td>
                     <td className="figures px-3 py-3.5 text-right text-muted">{l.resourceCount}</td>
                     <td className="px-3 py-3.5">
-                      <ProgressBar value={l.watchCompletionPercent} />
+                      {l.watchCompletionPercent === null ? <NotTracked reason={WATCH_NOT_TRACKED} /> : <ProgressBar value={l.watchCompletionPercent} />}
                     </td>
                     <td className="figures px-5 py-3.5 text-right text-[12.5px] text-muted">{updatedLabel(l.updatedAt)}</td>
                   </tr>
@@ -264,7 +264,7 @@ export function TeacherLectures() {
 
       {state.status === 'ready' && (
         <p className="text-[12px] text-muted">
-          {visible.length} of {lectures.length} lectures shown. Watch numbers are counted per course enrolment.
+          {visible.length} of {lectures.length} lectures shown. Watch completion is not recorded yet: students cannot play lectures in the portal.
         </p>
       )}
 

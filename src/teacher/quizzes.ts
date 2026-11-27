@@ -627,7 +627,11 @@ export async function moveQuestion(db: Db, teacherId: string, questionId: string
 
   /* Renumber the whole list so a gap or a duplicate position from an older delete cannot stall a move. */
   const order = rows.map((r) => r.id)
-  ;[order[index], order[order.indexOf(other.id)]] = [other.id, questionId]
+  // Both indexes are fixed before the swap. Looking the second one up inside the
+  // destructuring assignment found the slot just overwritten, so a move down
+  // wrote the question back where it was and nothing moved.
+  const otherIndex = direction === 'UP' ? index - 1 : index + 1
+  ;[order[index], order[otherIndex]] = [order[otherIndex], order[index]]
   await db.batch(order.map((id, i) => db.prepare(`UPDATE quiz_questions SET position = ?1 WHERE id = ?2`).bind(i + 1, id)))
   await touch(db, quizId)
   return withQuiz(db, teacherId, quizId)

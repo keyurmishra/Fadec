@@ -12,7 +12,7 @@ import type { TeacherCourseSummaryDTO, TeacherOutlineSection } from '../../contr
 import { cx } from '../../lib/cx'
 import { teacherApi } from '../../lib/teacher-api'
 import { useDocumentTitle } from '../../lib/useDocumentTitle'
-import { PageHeader, ProgressBar } from '../components/ui'
+import { NotTracked, PageHeader, ProgressBar } from '../components/ui'
 
 /*
   Course detail and curriculum builder.
@@ -429,7 +429,11 @@ export function TeacherCourseDetail() {
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-muted">Completion</dt>
                 <dd className="flex items-center gap-2">
-                  <ProgressBar value={course.completionPercent} />
+                  {course.completionPercent === null ? (
+                    <NotTracked reason="Learner progress is not recorded yet, so course completion cannot be measured." />
+                  ) : (
+                    <ProgressBar value={course.completionPercent} />
+                  )}
                 </dd>
               </div>
               <div className="flex items-center justify-between gap-3">

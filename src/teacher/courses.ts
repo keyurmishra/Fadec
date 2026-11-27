@@ -23,8 +23,8 @@ export type CourseRow = {
   thumbnail_url: string | null
   /** Active enrolments, counted in the same query so no stored total can drift. */
   student_count: number
-  assignment_count: number
-  completion_percent: number
+  /** Counted from the assignments table, not the seeded column of the same name. */
+  assignment_total: number
   position: number
   created_at: string
   updated_at: string
@@ -37,6 +37,7 @@ export type CourseRow = {
 const SELECT_COURSE = `
   SELECT c.*,
          (SELECT COUNT(*) FROM course_enrolments e WHERE e.course_id = c.id AND e.status = 'ACTIVE') AS student_count,
+         (SELECT COUNT(*) FROM assignments a WHERE a.course_id = c.id) AS assignment_total,
          t.name AS instructor_name, t.headline AS instructor_headline, t.avatar_url AS instructor_avatar
   FROM courses c
   JOIN teachers t ON t.id = c.instructor_id`
@@ -59,9 +60,14 @@ const summary = (row: CourseRow, counts: { sectionCount: number; lectureCount: n
   },
   sectionCount: counts?.sectionCount ?? 0,
   lectureCount: counts?.lectureCount ?? 0,
-  assignmentCount: row.assignment_count,
+  assignmentCount: row.assignment_total,
   enrolledCount: row.student_count,
-  completionPercent: row.completion_percent,
+  /*
+    Not reported. The courses table still has the seeded assignment_count and
+    completion_percent columns, but they were typed-in numbers, not measurements,
+    and nothing records learner progress yet.
+  */
+  completionPercent: null,
   draftLectureCount: counts?.draftLectureCount ?? 0,
   price: null,
   publishedAt: row.published_at,
