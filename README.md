@@ -14,8 +14,11 @@ tenancy), no media storage, and nothing is deployed. See
 [Known limitations](#known-limitations) before showing it to anyone outside
 the team.
 
-Product context lives in `docs/product/` (the current-implementation PRD) and
-the working rules for contributors in `CLAUDE.md`.
+Product context lives in `docs/product/`: the Master PRD
+(`FADEC_MASTER_PRD.md`, the target product) and the Current Implementation
+PRD (`FADEC_CURRENT_IMPLEMENTATION_PRD.docx`, with a `.pdf` reading copy,
+which records what was built before M0). The working rules for contributors
+are in `CLAUDE.md`.
 
 ## Stack
 
@@ -43,7 +46,7 @@ src/
   teacher/pages/  teaching studio screens
   learn/pages/    student portal screens
 test/             Vitest suites that call the Worker against an in-memory D1
-docs/product/     current-implementation PRD
+docs/product/     Master PRD and Current Implementation PRD (.docx + .pdf)
 ```
 
 Requests under `/api/*` reach Hono; every other path is served from the built
